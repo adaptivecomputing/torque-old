@@ -1,5 +1,5 @@
 #
-# TORQUE 4.1.1 README (released Aug, 7 2012)
+# TORQUE 4.2-EA README (Early Access branch released November 2012)
 #
 
 Homepage:                     http://adaptivecomputing.com/torque/
