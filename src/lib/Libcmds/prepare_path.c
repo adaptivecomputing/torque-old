@@ -106,20 +106,20 @@ int prepare_path(
   char *host)      /* I */
 
   {
-  int i;
+  int          i;
 
-  char *c;
+  char        *c;
 
-  char host_name[PBS_MAXSERVERNAME+1];
-  int h_pos;
-  char path_name[MAXPATHLEN+1];
-  int p_pos;
-  char cwd[MAXPATHLEN+1];
-  char *host_given;
+  char         host_name[PBS_MAXSERVERNAME+1];
+  int          h_pos;
+  char         path_name[MAXPATHLEN+1];
+  int          p_pos;
+  char         cwd[MAXPATHLEN+1];
+  char        *host_given;
 
-  struct stat statbuf;
-  dev_t dev;
-  ino_t ino;
+  struct stat  statbuf;
+  dev_t        dev;
+  ino_t        ino;
 
   if (path_out != NULL)
     path_out[0] = '\0';
@@ -268,16 +268,19 @@ int prepare_path(
           return(1);
           }
         }
-
-      if ((!memcmp(&dev, &statbuf.st_dev, sizeof(dev_t))) &&
-          (!memcmp(&ino, &statbuf.st_ino, sizeof(ino_t))))
+     
+      if (c != NULL)
         {
-        if (c != NULL)
-          snprintf(cwd, MAXPATHLEN, "%s", c);
-        }
-      else
-        {
-        c = NULL;
+          if ((!memcmp(&dev, &statbuf.st_dev, sizeof(dev_t))) &&
+              (!memcmp(&ino, &statbuf.st_ino, sizeof(ino_t))))
+            {
+            if (c != NULL)
+              snprintf(cwd, MAXPATHLEN, "%s", c);
+            }
+          else
+            {
+            c = NULL;
+            }
         }
       }
 
@@ -316,6 +319,15 @@ int prepare_path(
     char *HomeVal = getenv("HOME");
     char *NamePtr = path_name+strlen("$HOME");
 
+    if((HomeVal == NULL)||(NamePtr == NULL))
+      return(1);
+    /* check if the path exeeds MAXPATHLEN */
+    size_t path_out_length = strlen(HomeVal);
+    size_t home_val_length = strlen(NamePtr);
+    if (path_out_length + home_val_length >= MAXPATHLEN)
+      {
+      return(4);
+      }
     /* add the string to the path correctly */
     strcat(path_out,HomeVal);
     strcat(path_out,NamePtr);

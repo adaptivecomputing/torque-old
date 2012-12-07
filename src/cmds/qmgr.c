@@ -1015,7 +1015,7 @@ void display(
       {
       if (format)
         {
-        if (is_attr(otype, attr->name, TYPE_ATTR_PUBLIC))
+        if ((attr->name == NULL)?FALSE:is_attr(otype, attr->name, TYPE_ATTR_PUBLIC))
           {
           comma = TRUE;
           first = TRUE;
@@ -1035,8 +1035,7 @@ void display(
             if (otype == MGR_OBJ_NODE)
               printf("node %s ", status->name);
 
-            if (attr->name != NULL)
-              printf("%s", attr->name);
+            printf("%s", attr->name);
 
             if (attr->resource != NULL)
               printf(".%s", attr->resource);
@@ -1530,7 +1529,7 @@ int execute(
           if (len < 256)
             {
             sprintf(errnomsg, "qmgr obj=%s svr=%s: %s\n",
-                    pname -> obj_name, Svrname(sp),  errmsg);
+              pname -> obj_name, Svrname(sp),  errmsg);
 
             if (! zopt) fprintf(stderr, "%s", errnomsg);
             }
@@ -1546,7 +1545,11 @@ int execute(
             fprintf(stderr, "qmgr: Error from server\n");
 
         if (aopt)
+          {
+          if (name != NULL)
+            free_objname_list(name);
           return perr;
+          }
 
         error = perr;
         }
@@ -1733,7 +1736,7 @@ struct objname *
 
       if (prev_obj == NULL)
         prev_obj = cur_obj;
-      else if (cur_obj != NULL)
+      else
         {
         prev_obj -> next = cur_obj;
         prev_obj = cur_obj;
@@ -2094,31 +2097,33 @@ int is_attr(
     *name_ptr = '\0';
     }
 
-  if (attr_public != NULL && (attr_type & TYPE_ATTR_PUBLIC))
+  if ((attr_public != NULL) &&
+      (attr_type & TYPE_ATTR_PUBLIC))
     {
     while (*attr_public != NULL && ret == FALSE)
       {
-/*      if (strncmp(name, *attr_public, strlen(*attr_public)) == 0)*/
-      if(strcmp(dupname, *attr_public) == 0)
+      if (strcmp(dupname, *attr_public) == 0)
         {
-          ret =  TRUE;
+        ret =  TRUE;
         }
 
       attr_public++;
       }
     }
 
-  if (attr_readonly != NULL && (attr_type & TYPE_ATTR_READONLY))
+  if ((attr_readonly != NULL) &&
+      (attr_type & TYPE_ATTR_READONLY))
     {
     while (*attr_readonly != NULL && ret == FALSE)
       {
-      /*if (strncmp(name, *attr_readonly, strlen(*attr_readonly)) == 0)*/
       if (strcmp(dupname, *attr_readonly) == 0)
         ret = TRUE;
 
       attr_readonly++;
       }
     }
+
+  free(dupname);
 
   return(ret);
   }  /* END is_attr() */
@@ -2230,17 +2235,17 @@ void show_help(
 
 int parse(
 
-  char    *request,
-  int     *oper,
-  int     *type,
-  char   **names,
+  char            *request,
+  int             *oper,
+  int             *type,
+  char           **names,
   struct attropl **attr)
 
   {
-  int error;
-  int lp;                     /* Length of current string */
-  int len;        /* ammount parsed by parse_request */
-  int i;        /* loop var */
+  int         error;
+  int         lp;       /* Length of current string */
+  int         len;      /* ammount parsed by parse_request */
+  int         i;        /* loop var */
   static char req[MAX_REQ_WORDS][MAX_REQ_WORD_LEN] = { {'\0'} };
 
   /* clear old data in req */
@@ -2252,7 +2257,7 @@ int parse(
 
   len = parse_request(request, req);
 
-  if (len != 0)  /* error in parse_request */
+  if (len != 0)
     {
     lp = strlen(req[IND_CMD]);
 
@@ -2482,14 +2487,14 @@ struct server *
       new_server(void)
   {
 
-  struct server *new;
+  struct server *new_svr;
 
-  Mstruct(new, struct server);
-  new -> s_connect = -1;
-  new -> s_name = NULL;
-  new -> ref = 0;
-  new -> next = NULL;
-  return new;
+  Mstruct(new_svr, struct server);
+  new_svr -> s_connect = -1;
+  new_svr -> s_name = NULL;
+  new_svr -> ref = 0;
+  new_svr -> next = NULL;
+  return new_svr;
   }
 
 /*
@@ -2549,15 +2554,15 @@ struct objname *
       new_objname(void)
   {
 
-  struct objname *new;
-  Mstruct(new, struct objname);
-  new -> obj_type = MGR_OBJ_NONE;
-  new -> obj_name = NULL;
-  new -> svr_name = NULL;
-  new -> svr = NULL;
-  new -> next = NULL;
+  struct objname *new_obj;
+  Mstruct(new_obj, struct objname);
+  new_obj -> obj_type = MGR_OBJ_NONE;
+  new_obj -> obj_name = NULL;
+  new_obj -> svr_name = NULL;
+  new_obj -> svr = NULL;
+  new_obj -> next = NULL;
 
-  return new;
+  return new_obj;
   }
 
 /*
@@ -2875,15 +2880,16 @@ int parse_request(
   char  req[][MAX_REQ_WORD_LEN])
 
   {
-  char *foreptr, *backptr;
-  int len;
-  int i = 0;
-  int chars_parsed = 0;
-  int error = 0;
+  char *foreptr;
+  char *backptr;
+  int   len = 0;
+  int   i = 0;
+  int   chars_parsed = 0;
+  int   error = 0;
 
   foreptr = request;
 
-  for (i = 0;!EOL(*foreptr) && (i < MAX_REQ_WORDS) && (error == 0);)
+  for (i = 0; !EOL(*foreptr) && (i < MAX_REQ_WORDS) && (error == 0);)
     {
     while (White(*foreptr))
       foreptr++;
@@ -2895,35 +2901,30 @@ int parse_request(
 
     len = foreptr - backptr;
 
-    if (len > MAX_REQ_WORD_LEN)
+    if (len >= MAX_REQ_WORD_LEN)
       {
       error = 1;
       chars_parsed = (int)(foreptr - request);
 
-      if (! zopt) fprintf(stderr, "qmgr: max word length exceeded\n");
+      if (!zopt)
+        fprintf(stderr, "qmgr: max word length exceeded\n");
 
       CaretErr(request, chars_parsed);
+
+      return(error);
       }
 
     strncpy(req[i], backptr, len);
-
     req[i][len] = '\0';
+
     i++;
     }  /* END for (i) */
 
   chars_parsed = foreptr - request;
 
-  if (error == 0)
-    {
-    /* FAILURE */
-
-    return(chars_parsed);
-    }
-
   /* SUCCESS */
-
-  return(0);
-  }
+  return(chars_parsed);
+  } /* END parse_request() */
 
 
 /* END qmgr.c */

@@ -113,6 +113,7 @@ extern char *msg_jobrerun;
 extern void rel_resc(job *);
 
 extern job  *chk_job_request(char *, struct batch_request *);
+int          issue_signal(job **, char *, void(*)(batch_request *), void *);
 
 /*
  * post_rerun - handler for reply from mom on signal_job sent in req_rerunjob
@@ -120,22 +121,16 @@ extern job  *chk_job_request(char *, struct batch_request *);
  * If mom rejected the signal for unknown jobid, then force local requeue.
  */
 
-static void post_rerun(
+void post_rerun(
 
-  struct work_task *pwt)
+  batch_request *preq)
 
   {
-  int  newstate;
-  int  newsub;
-  job *pjob;
+  int   newstate;
+  int   newsub;
+  job  *pjob;
 
-  struct batch_request *preq;
-  char                  log_buf[LOCAL_LOG_BUF_SIZE];
-
-  preq = get_remove_batch_request(pwt->wt_parm1);
-
-  free(pwt->wt_mutex);
-  free(pwt);
+  char  log_buf[LOCAL_LOG_BUF_SIZE];
 
   if (preq == NULL)
     return;
@@ -176,14 +171,16 @@ static void post_rerun(
  */
 
 int req_rerunjob(
-    struct batch_request *preq)
-  {
-  int rc = PBSE_NONE;
-  job                  *pjob;
+   
+  struct batch_request *preq)
 
-  int                   Force;
-  int                   MgrRequired = TRUE;
-  char                  log_buf[LOCAL_LOG_BUF_SIZE];
+  {
+  int     rc = PBSE_NONE;
+  job    *pjob;
+
+  int     Force;
+  int     MgrRequired = TRUE;
+  char    log_buf[LOCAL_LOG_BUF_SIZE];
 
   /* check if requestor is admin, job owner, etc */
 
@@ -328,19 +325,29 @@ int req_rerunjob(
         }
       else
         {
-        int newstate, newsubst;
-        unsigned int dummy;
-        char *tmp;
+        int           newstate;
+        int           newsubst;
+        unsigned int  dummy;
+        char         *tmp;
+        long          cray_enabled = FALSE;
        
         if (pjob != NULL)
           {
-          tmp = parse_servername(pjob->ji_wattr[JOB_ATR_exec_host].at_val.at_str, &dummy);
+          get_svr_attr_l(SRV_ATR_CrayEnabled, &cray_enabled);
+
+          if ((cray_enabled == TRUE) &&
+              (pjob->ji_wattr[JOB_ATR_login_node_id].at_val.at_str != NULL))
+            tmp = parse_servername(pjob->ji_wattr[JOB_ATR_login_node_id].at_val.at_str, &dummy);
+          else
+            tmp = parse_servername(pjob->ji_wattr[JOB_ATR_exec_host].at_val.at_str, &dummy);
           
           /* Cannot communicate with MOM, forcibly requeue job.
              This is a relatively disgusting thing to do */
           
           sprintf(log_buf, "rerun req to %s failed (rc=%d), forcibly requeueing job",
             tmp, rc);
+
+          free(tmp);
   
           log_event(
             PBSEVENT_ERROR | PBSEVENT_ADMIN | PBSEVENT_JOB,
@@ -348,7 +355,7 @@ int req_rerunjob(
             pjob->ji_qs.ji_jobid,
             log_buf);
           
-          log_err(-1, "req_rerunjob", log_buf);
+          log_err(-1, __func__, log_buf);
           
           strcat(log_buf, ", previous output files may be lost");
   

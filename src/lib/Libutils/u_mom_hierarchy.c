@@ -153,6 +153,7 @@ mom_hierarchy_t *initialize_mom_hierarchy()
     {
     free(nt);
     nt = NULL;
+    return(nt);
     }
 
   nt->current_path  = -1;
@@ -191,10 +192,18 @@ int add_network_entry(
     levels = initialize_resizable_array(INITIAL_SIZE_NETWORK);
 
     if (levels == NULL)
+      {
+      free(nc);
+
       return(-1);
+      }
 
     if ((rc = insert_thing(nt->paths,levels)) < 0)
+      {
+      free(nc);
+
       return(rc);
+      }
     }
 
   /* check if the level is in the array already */
@@ -209,7 +218,11 @@ int add_network_entry(
       return(-1);
 
     if ((rc = insert_thing(levels,node_comm_entries)) < 0)
+      {
+      free(nc);
+
       return(rc);
+      }
     }
 
   /* finally, insert the entry into the node_comm_entries */
@@ -220,7 +233,10 @@ int add_network_entry(
   nc->stream = -1;
 
   if ((nc->name   = calloc(1, strlen(name) + 1)) == NULL)
+    {
+    free(nc);
     return(ENOMEM);
+    }
   else
     strcpy(nc->name,name);
 

@@ -36,6 +36,7 @@
 #include "../lib/Libifl/lib_ifl.h" /* pbs_disconnect_socket */
 #include "../server/svr_connect.h" /* svr_disconnect_sock */
 #include "mom_job_func.h" /* mom_job_purge */
+#include "mom_job_cleanup.h"
 #ifdef ENABLE_CPA
 #include "pbs_cpa.h"
 #endif
@@ -417,10 +418,10 @@ void scan_for_exiting(void)
       }
 
 
-    for (
-      ptask = (task *)GET_NEXT(pjob->ji_tasks);
-      ptask != NULL;
-      ptask = (task *)GET_NEXT(ptask->ti_jobtask))
+    for (ptask = (task *)GET_NEXT(pjob->ji_tasks);
+         ptask != NULL;
+         ptask = (task *)GET_NEXT(ptask->ti_jobtask))
+
       {
       if (ptask->ti_qs.ti_status != TI_STATE_EXITED)
         continue;
@@ -438,11 +439,7 @@ void scan_for_exiting(void)
           pjob->ji_qs.ji_un.ji_momt.ji_exitstat = ptask->ti_qs.ti_exitstat;
           }
 
-        log_event(
-          PBSEVENT_JOB,
-          PBS_EVENTCLASS_JOB,
-          pjob->ji_qs.ji_jobid,
-          "job was terminated");
+        log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, pjob->ji_qs.ji_jobid, "job was terminated");
           
         mom_radix = pjob->ji_wattr[JOB_ATR_job_radix].at_val.at_long;
 
@@ -453,9 +450,11 @@ void scan_for_exiting(void)
         else
           {
           NumSisters = 1; /* We use this for later */
+
           if (pjob->ji_sampletim == 0)
             {
             pjob->ji_sampletim = time(NULL);
+
             if ((pjob->ji_qs.ji_svrflags & JOB_SVFLG_INTERMEDIATE_MOM) == 0)
               {
               /* only call send_sisters with radix == TRUE if this
@@ -472,16 +471,16 @@ void scan_for_exiting(void)
             time_now = time(NULL);
             if (time_now - pjob->ji_sampletim > 5)
               {
-               
-               if ((pjob->ji_qs.ji_svrflags & JOB_SVFLG_INTERMEDIATE_MOM) == 0)
-                 {
-                 /* only call send_sisters with radix == TRUE if this is
-                  * mother superior intermediate moms already called this
-                  * in im_request IM_KILL_JOB_RADIX */
-                 NumSisters = send_sisters(pjob, IM_KILL_JOB_RADIX, TRUE);
-                 pjob->ji_outstanding = NumSisters;
-                 }
-               }
+
+              if ((pjob->ji_qs.ji_svrflags & JOB_SVFLG_INTERMEDIATE_MOM) == 0)
+                {
+                /* only call send_sisters with radix == TRUE if this is
+                 * mother superior intermediate moms already called this
+                 * in im_request IM_KILL_JOB_RADIX */
+                NumSisters = send_sisters(pjob, IM_KILL_JOB_RADIX, TRUE);
+                pjob->ji_outstanding = NumSisters;
+                }
+              }
             }
           } 
 
@@ -504,6 +503,7 @@ void scan_for_exiting(void)
             {
             momport = pbs_rm_port;
             }
+
           job_save(pjob, SAVEJOB_QUICK, momport);
           }
         else if (LOGLEVEL >= 3)
@@ -586,7 +586,8 @@ void scan_for_exiting(void)
     /* If we are an intermediate mom we need to see if everyone has checked in */
 	  if ((pjob->ji_qs.ji_svrflags & JOB_SVFLG_INTERMEDIATE_MOM))
 	    {
-	    if ((pjob->ji_qs.ji_substate != JOB_SUBSTATE_EXITING) && (pjob->ji_qs.ji_substate != JOB_SUBSTATE_NOTERM_REQUE))
+	    if ((pjob->ji_qs.ji_substate != JOB_SUBSTATE_EXITING) &&
+          (pjob->ji_qs.ji_substate != JOB_SUBSTATE_NOTERM_REQUE))
 	  	  {
 	  	  if (LOGLEVEL >= 3)
 	  	    {
@@ -627,6 +628,7 @@ void scan_for_exiting(void)
            server. If we have tasks to complete continue. But if there
            are no tasks left to run we need to delete the job.*/
         ptask = (task *)GET_NEXT(pjob->ji_tasks);
+
         if (ptask == NULL)
           mom_deljob(pjob);
         }
@@ -691,7 +693,7 @@ void scan_for_exiting(void)
     pjob->ji_qs.ji_svrflags &= ~JOB_SVFLG_Suspend;
 
     if ((pjob->ji_qs.ji_substate != JOB_SUBSTATE_NOTERM_REQUE) &&
-       (pjob->ji_qs.ji_substate != JOB_SUBSTATE_EXIT_WAIT))
+        (pjob->ji_qs.ji_substate != JOB_SUBSTATE_EXIT_WAIT))
       kill_job(pjob, SIGKILL, __func__, "local task termination detected");
     else
       {
@@ -751,22 +753,20 @@ void scan_for_exiting(void)
         "calling mom_open_socket_to_jobs_server");
       }
 
-    if (pjob->ji_qs.ji_substate != JOB_SUBSTATE_EXIT_WAIT)
-      run_epilogues(pjob);
+    /* epilogues are now run by preobit reply, which happens after the fork */
+
     pjob->ji_qs.ji_substate = JOB_SUBSTATE_PREOBIT;
+
     rc = send_job_status(pjob);
+
     if (rc != PBSE_NONE)
       {
       pjob->ji_qs.ji_substate = JOB_SUBSTATE_EXIT_WAIT;
-      if(LOGLEVEL >= 4)
+      if (LOGLEVEL >= 4)
         {
         snprintf(log_buf, LOCAL_LOG_BUF_SIZE, "could not contact server for job %s: error: %d", 
-            pjob->ji_qs.ji_jobid, rc);
-        log_record(
-            PBSEVENT_JOB,
-            PBS_EVENTCLASS_JOB,
-            __func__,
-            log_buf);
+          pjob->ji_qs.ji_jobid, rc);
+        log_record(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, __func__, log_buf);
         }
       }
 
@@ -791,85 +791,74 @@ void scan_for_exiting(void)
   return;
   }  /* END scan_for_exiting() */
 
+
+
  
 int run_epilogues(
     
-  job *pjob)
+  job *pjob,
+  int  i_am_ms)
 
   {
   char     *path_epiloguserjob;
-  resource *presc; 
+  resource *presc;
+  int       io_type = PE_IO_TYPE_STD;
   int       rc;
 
-  /* check epilog script */
 
-  if ((pjob->ji_wattr[(int)JOB_ATR_interactive].at_flags & ATR_VFLAG_SET) &&
-       pjob->ji_wattr[(int)JOB_ATR_interactive].at_val.at_long)
+  if ((pjob->ji_wattr[JOB_ATR_interactive].at_flags & ATR_VFLAG_SET) &&
+      pjob->ji_wattr[JOB_ATR_interactive].at_val.at_long)
     {
-    /* job is interactive */
+    io_type = PE_IO_TYPE_NULL;
+    }
 
-    presc = find_resc_entry( &pjob->ji_wattr[(int)JOB_ATR_resource],
-                             find_resc_def(svr_resc_def, "epilogue", svr_resc_size));
+  if (i_am_ms == TRUE)
+    {
+    presc = find_resc_entry(&pjob->ji_wattr[JOB_ATR_resource],
+              find_resc_def(svr_resc_def, "epilogue", svr_resc_size));
+    
     if ((presc != NULL))
+      {
       if ((presc->rs_value.at_flags & ATR_VFLAG_SET) && (presc->rs_value.at_val.at_str != NULL))
         {
         path_epiloguserjob = get_local_script_path(pjob, presc->rs_value.at_val.at_str);
+        
         if (path_epiloguserjob)
           {
-          if (run_pelog(PE_EPILOGUSERJOB, path_epiloguserjob, pjob, PE_IO_TYPE_NULL) != 0)
+          if (run_pelog(PE_EPILOGUSERJOB, path_epiloguserjob, pjob, io_type) != 0)
             {
             log_err(-1, __func__, "user local epilog failed");
             }
+          
           free(path_epiloguserjob);
           }
         }
-    
-    if (run_pelog(PE_EPILOGUSER, path_epiloguser, pjob, PE_IO_TYPE_NULL) != 0)
-      {
-      log_err(-1, __func__, "user epilog failed - interactive job");
       }
-
-    if (run_pelog(PE_EPILOG, path_epilog, pjob, PE_IO_TYPE_NULL) != 0)
+  
+    if (run_pelog(PE_EPILOGUSER, path_epiloguser, pjob, io_type) != 0)
+      log_err(-1, __func__, "user epilog failed - interactive job");
+    
+    if ((rc = run_pelog(PE_EPILOG, path_epilog, pjob, io_type)) != 0)
       {
-      log_err(-1, __func__, "system epilog failed - interactive job");
+      sprintf(log_buffer, "system epilog failed w/rc=%d", rc);
+      
+      log_err(-1, __func__, log_buffer);
       }
     }
   else
     {
-    /* job is not interactive */
-
-    presc = find_resc_entry( &pjob->ji_wattr[(int)JOB_ATR_resource], 
-                             find_resc_def(svr_resc_def, "epilogue", svr_resc_size));
-    if ((presc != NULL))
-      if ((presc->rs_value.at_flags & ATR_VFLAG_SET) && 
-          (presc->rs_value.at_val.at_str != NULL))
-        {
-        path_epiloguserjob = get_local_script_path(pjob, presc->rs_value.at_val.at_str);
-
-        if (path_epiloguserjob)
-          {
-          if (run_pelog(PE_EPILOGUSERJOB, path_epiloguserjob, pjob, PE_IO_TYPE_STD) != 0)
-            {
-            log_err(-1, __func__, "user local epilog failed");
-            }
-          free(path_epiloguserjob);
-          }
-       }
-
-    if (run_pelog(PE_EPILOGUSER, path_epiloguser, pjob, PE_IO_TYPE_STD) != 0)
+    if (run_pelog(PE_EPILOGUSER, path_epiloguserp, pjob, io_type) != 0)
+      log_err(-1, __func__, "user epilog failed - interactive job");
+  
+    if (run_pelog(PE_EPILOG, path_epilogp, pjob, PE_IO_TYPE_STD) != 0)
       {
-      log_err(-1, __func__, "user epilog failed");
+      log_err(-1, __func__, "parallel epilog failed");
       }
-
-    if ((rc = run_pelog(PE_EPILOG, path_epilog, pjob, PE_IO_TYPE_STD)) != 0)
-      {
-      sprintf(log_buffer, "system epilog failed w/rc=%d", rc);
-      log_err(-1, __func__, log_buffer);
-      }
-    }    /* END else (jobisinteractive) */
+    }
 
   return(PBSE_NONE);
-  }
+  } /* run_epilogues() */
+
 
 
 
@@ -885,7 +874,8 @@ int send_job_status(
   char            *dash;
   char            *send_ptr = pjob->ji_qs.ji_jobid;
 
-  if ((dash = strchr(pjob->ji_qs.ji_jobid, '-')) != NULL)
+  if (((dash = strchr(pjob->ji_qs.ji_jobid, '-')) != NULL) &&
+      (dash < strchr(pjob->ji_qs.ji_jobid, '.')))
     {
     *dash = '\0';
     snprintf(jobid_to_send, sizeof(jobid_to_send), "%s%s", pjob->ji_qs.ji_jobid, dash + 2);
@@ -920,7 +910,9 @@ int send_job_status(
     }
   else
     {
-    if ((errno == EINPROGRESS) || (errno == ETIMEDOUT) || (errno == EINTR))
+    if ((errno == EINPROGRESS) ||
+        (errno == ETIMEDOUT) ||
+        (errno == EINTR))
       sprintf(log_buffer, "connect to server unsuccessful after 5 seconds - will retry");
 
     set_mom_server_down(pjob->ji_qs.ji_un.ji_momt.ji_svraddr);
@@ -1096,18 +1088,16 @@ void *preobit_reply(
   pid_t                 cpid;
   job                  *pjob;
   int                   irtn;
+  exiting_job_info     *eji;
 
   struct batch_request *preq;
 
   struct brp_status    *pstatus;
   int                   deletejob = 0;
 
-  char                 *path_epiloguserjob;
-  resource             *presc;
   int                   sock = *(int *)new_sock;
   struct tcp_chan      *chan = NULL;
 
-  /* struct batch_status *bsp = NULL; */
   log_record(PBSEVENT_DEBUG, PBS_EVENTCLASS_SERVER, __func__, "top of preobit_reply");
 
   /* read and decode the reply */
@@ -1254,7 +1244,6 @@ void *preobit_reply(
 
   free_br(preq);
 
-
   if (deletejob == 1)
     {
     log_record(PBSEVENT_ERROR, PBS_EVENTCLASS_JOB, pjob->ji_qs.ji_jobid, log_buffer);
@@ -1306,6 +1295,10 @@ void *preobit_reply(
     /* parent - mark that job epilog subtask has been launched */
 
     /* NOTE:  pjob->ji_mompost will be executed in scan_for_terminated() */
+    eji = calloc(1, sizeof(exiting_job_info));
+    strcpy(eji->jobid, pjob->ji_qs.ji_jobid);
+    eji->obit_sent = time(NULL);
+    insert_thing(exiting_job_list, eji);
 
     pjob->ji_qs.ji_substate = JOB_SUBSTATE_OBIT;
     pjob->ji_momsubt = cpid;
@@ -1324,81 +1317,8 @@ void *preobit_reply(
     return NULL;
     }
 
-  /* child */
-
-  /* check epilog script */
-
-  if ((pjob->ji_wattr[JOB_ATR_interactive].at_flags & ATR_VFLAG_SET) &&
-      pjob->ji_wattr[JOB_ATR_interactive].at_val.at_long)
-    {
-    /* job is interactive */
-
-    presc = find_resc_entry(
-          &pjob->ji_wattr[JOB_ATR_resource],
-          find_resc_def(svr_resc_def, "epilogue", svr_resc_size));
-    if ((presc != NULL))
-      if ((presc->rs_value.at_flags & ATR_VFLAG_SET) && (presc->rs_value.at_val.at_str != NULL))
-        {
-        path_epiloguserjob = get_local_script_path(pjob, presc->rs_value.at_val.at_str);
-        if (path_epiloguserjob)
-          {
-          if (run_pelog(PE_EPILOGUSERJOB, path_epiloguserjob, pjob, PE_IO_TYPE_NULL) != 0)
-            {
-            log_err(-1, __func__, "user local epilog failed");
-            }
-          free(path_epiloguserjob);
-          }
-        }
-
-
-    if (run_pelog(PE_EPILOGUSER, path_epiloguser, pjob, PE_IO_TYPE_NULL) != 0)
-      {
-      log_err(-1, __func__, "user epilog failed - interactive job");
-      }
-
-    if (run_pelog(PE_EPILOG, path_epilog, pjob, PE_IO_TYPE_NULL) != 0)
-      {
-      log_err(-1, __func__, "system epilog failed - interactive job");
-      }
-    }
-  else
-    {
-    /* job is not interactive */
-
-    int rc;
-
-    presc = find_resc_entry(
-          &pjob->ji_wattr[JOB_ATR_resource],
-          find_resc_def(svr_resc_def, "epilogue", svr_resc_size));
-    if ((presc != NULL))
-      if ((presc->rs_value.at_flags & ATR_VFLAG_SET) && (presc->rs_value.at_val.at_str != NULL))
-        {
-        path_epiloguserjob = get_local_script_path(pjob, presc->rs_value.at_val.at_str);
-
-        if (path_epiloguserjob)
-          {
-          if (run_pelog(PE_EPILOGUSERJOB, path_epiloguserjob, pjob, PE_IO_TYPE_STD) != 0)
-            {
-            log_err(-1, __func__, "user local epilog failed");
-            }
-          free(path_epiloguserjob);
-          }
-
-        }
-
-    if (run_pelog(PE_EPILOGUSER, path_epiloguser, pjob, PE_IO_TYPE_STD) != 0)
-      {
-      log_err(-1, __func__, "user epilog failed");
-      }
-
-    if ((rc = run_pelog(PE_EPILOG, path_epilog, pjob, PE_IO_TYPE_STD)) != 0)
-      {
-      sprintf(log_buffer, "system epilog failed w/rc=%d",
-              rc);
-
-      log_err(-1, __func__, log_buffer);
-      }
-    }    /* END else (jobisinteractive) */
+  /* child - just run epilogues */
+  run_epilogues(pjob, TRUE);
 
   exit(0);
   }  /* END preobit_reply() */
@@ -1729,7 +1649,6 @@ void init_abort_jobs(
   int            j;
   int            sisters;
   int            mom_radix = 0;
-  int            index;
 #endif /* ndef NUMA_SUPPORT */
 
   struct dirent *pdirent;
@@ -1951,9 +1870,7 @@ void init_abort_jobs(
 
         pj->ji_resources = (noderes *)calloc(sisters, sizeof(noderes));
 
-        index = find_attr(job_attr_def, "job_radix", JOB_ATR_LAST);
-
-        mom_radix = pj->ji_wattr[index].at_val.at_long;
+        mom_radix = pj->ji_wattr[JOB_ATR_job_radix].at_val.at_long;
 
         if (mom_radix)
           {
@@ -2112,43 +2029,6 @@ int needs_and_ready_for_reply(
 
 
 
-void run_any_epilogues(
-
-  job *pjob)
-
-  {
-  if ((pjob->ji_wattr[JOB_ATR_interactive].at_flags & ATR_VFLAG_SET) &&
-      pjob->ji_wattr[JOB_ATR_interactive].at_val.at_long)
-    {
-  
-    if (run_pelog(PE_EPILOGUSER, path_epiloguserp, pjob, PE_IO_TYPE_NULL) != 0)
-      {
-      log_err(-1, __func__, "user parallel epilog failed");
-      }
-  
-    if (run_pelog(PE_EPILOG, path_epilogp, pjob, PE_IO_TYPE_NULL) != 0)
-      {
-      log_err(-1, __func__, "parallel epilog failed");
-      }
-    }
-  else
-    {
-  
-    if (run_pelog(PE_EPILOGUSER, path_epiloguserp, pjob, PE_IO_TYPE_STD) != 0)
-      {
-      log_err(-1, __func__, "parallel user epilog failed");
-      }
-  
-    if (run_pelog(PE_EPILOG, path_epilogp, pjob, PE_IO_TYPE_STD) != 0)
-      {
-      log_err(-1, __func__, "parallel epilog failed");
-      }
-    }
-  } /* END run_any_epilogues() */
-
-
-
-
 int send_job_obit_to_ms(
 
   job *pjob,
@@ -2259,34 +2139,45 @@ int send_job_obit_to_ms(
     resend_momcomm     *mc = calloc(1, sizeof(resend_momcomm));
     killjob_reply_info *kj = calloc(1, sizeof(killjob_reply_info));
 
-    if ((kj != NULL) &&
-        (mc != NULL))
+    if (mc == NULL)
       {
-      mc->mc_type   = KILLJOB_REPLY;
-      mc->mc_struct = kj;
-
-      kj->ici = create_compose_reply_info(pjob->ji_qs.ji_jobid, cookie, np, command, event, TM_NULL_TASK);
-
-      if (kj->ici == NULL)
-        {
-        free(mc);
+      if (kj != NULL)
         free(kj);
-        }
-      else
-        {
-        kj->mem = mem;
-        kj->vmem = vmem;
-        kj->cputime = cput;
-        
-        if (mom_radix >= 2)
-          kj->node_id = pjob->ji_nodeid;
-        else
-          kj->node_id = -1;
-        
-        add_to_resend_things(mc);
-        }
+      
+      return(ENOMEM);
+      }
+    else if (kj == NULL)
+      {
+      if (mc != NULL)
+        free(mc);
+
+      return(ENOMEM);
       }
 
+    mc->mc_type   = KILLJOB_REPLY;
+    mc->mc_struct = kj;
+    
+    kj->ici = create_compose_reply_info(pjob->ji_qs.ji_jobid, cookie, np, command, event, TM_NULL_TASK);
+    
+    if (kj->ici == NULL)
+      {
+      free(mc);
+      free(kj);
+      }
+    else
+      {
+      kj->mem = mem;
+      kj->vmem = vmem;
+      kj->cputime = cput;
+      
+      if (mom_radix >= 2)
+        kj->node_id = pjob->ji_nodeid;
+      else
+        kj->node_id = -1;
+      
+      add_to_resend_things(mc);
+      }
+    
     if (LOGLEVEL >= 3)
       {
       log_event(
@@ -2326,7 +2217,7 @@ void exit_mom_job(
   if (needs_and_ready_for_reply(pjob) == FALSE)
     return;
 
-  run_any_epilogues(pjob);
+  run_epilogues(pjob, FALSE);
 
   send_job_obit_to_ms(pjob, mom_radix);
   

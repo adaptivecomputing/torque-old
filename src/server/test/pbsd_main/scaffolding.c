@@ -14,6 +14,7 @@
 #include "server.h" /* server */
 #include "pbs_nodes.h" /* pbsnode */
 #include "sched_cmds.h" /* SCH_SCHEDULE_NULL */
+#include "threadpool.h"
 
 hello_container failures;
 pthread_mutex_t *job_log_mutex;
@@ -34,7 +35,9 @@ int svr_chngNodesfile = 0; /* 1 signals want nodes file update */
 int svr_totnodes = 0; /* total number nodes defined */
 hello_container hellos;
 char pbs_server_name[1];
-
+pthread_mutex_t *poll_job_task_mutex;
+threadpool_t *request_pool;
+int              max_poll_job_tasks;
 
 int log_remove_old(char *DirPath, unsigned long ExpireTime)
   {
@@ -270,7 +273,7 @@ void track_save(struct work_task *pwt)
   exit(1);
   }
 
-void queue_route(pbs_queue *pque)
+void *queue_route(void *vp)
   {
   fprintf(stderr, "The call to queue_route needs to be mocked!!\n");
   exit(1);
@@ -347,7 +350,7 @@ hello_info *pop_hello(hello_container *hc)
   exit(1);
   }
 
-int unlock_node(struct pbsnode *pnode, char *id, char *msg, int log_level)
+int unlock_node(struct pbsnode *pnode, const char *id, char *msg, int log_level)
   {
   fprintf(stderr, "The call to unlock_node needs to be mocked!!\n");
   exit(1);
@@ -486,4 +489,13 @@ void scheduler_close() {}
 int unlock_ji_mutex(job *pjob, const char *id, char *msg, int logging)
   {
   return(0);
+  }
+
+int run_change_logs;
+
+void change_logs() {}
+
+void *inspect_exiting_jobs(void *vp) 
+  {
+  return(NULL);
   }

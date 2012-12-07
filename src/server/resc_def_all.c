@@ -97,7 +97,7 @@
 #include "server.h"
 #include "array.h"
 #include "utils.h"
-#include "svr_func.h" /* get_svr_attr_* */
+#include "svrfunc.h" /* get_svr_attr_* */
 
 extern struct server server;
 
@@ -118,8 +118,11 @@ extern struct server server;
 int decode_nodes(struct pbs_attribute *, char *, char *, char *, int);
 int set_node_ct(resource *, pbs_attribute *, int actmode);
 int set_proc_ct(resource *, pbs_attribute *, int actmode);
-int set_tokens_nodect(struct pbs_attribute *attr, struct pbs_attribute *new, enum batch_op actmode);
+int set_tokens_nodect(struct pbs_attribute *attr, struct pbs_attribute *new_attr, enum batch_op actmode);
 int set_mppnodect(resource *, pbs_attribute *, int actmode);
+int encode_procct(pbs_attribute *, tlist_head *phead, char *atname, char *rsname, int mode, int perm);
+
+
 resource_def *svr_resc_def;
 
 resource_def svr_resc_def_const[] =
@@ -303,7 +306,7 @@ resource_def svr_resc_def_const[] =
     { 
     "procct",   /* count of number of processors requested */
     decode_l,   /* read-only, set by server whenever       */
-    encode_l,   /* "nodes" and/or "procs" is set           */
+    encode_procct,   /* "nodes" and/or "procs" is set           */
     set_l,
     comp_l,
     free_null,
@@ -355,6 +358,16 @@ resource_def svr_resc_def_const[] =
     ATR_TYPE_LONG
   },
   { "gpus",      /* number of gpus for job */
+    decode_l,
+    encode_l,
+    set_l,
+    comp_l,
+    free_null,
+    NULL_FUNC,
+    READ_ONLY | ATR_DFLAG_SvRD | ATR_DFLAG_SvWR,
+    ATR_TYPE_LONG
+  },
+  { "mics",     /* number of mics for job */
     decode_l,
     encode_l,
     set_l,
@@ -769,13 +782,15 @@ int svr_resc_size = 0;
 int init_resc_defs(void)
 
   {
-  resource_def *tmpresc = NULL;
-  int rindex = 0, dindex = 0, unkindex = 0;
+  int                   rindex = 0;
+  int                   dindex = 0;
+  int                   unkindex = 0;
 #ifndef PBS_MOM
 
+  resource_def         *tmpresc = NULL;
   struct array_strings *resc_arst = NULL;
   char                 *extra_resc;
-  int   resc_num = 0;
+  int                   resc_num = 0;
 #endif
 
   svr_resc_size = sizeof(svr_resc_def_const) / sizeof(resource_def);
@@ -829,8 +844,8 @@ int init_resc_defs(void)
 
   unkindex = rindex;
 
+#ifndef PBS_MOM
   /* copy our dynamic resources */
-
   if (tmpresc)
     {
     for (dindex = 0; (tmpresc + dindex)->rs_decode; dindex++)
@@ -844,22 +859,15 @@ int init_resc_defs(void)
 
     free(tmpresc);
     }
+#endif
 
   /* copy the last "unknown" resource */
   memcpy(svr_resc_def + rindex, svr_resc_def_const + unkindex, sizeof(resource_def));
 
   svr_resc_size = rindex + 1;
 
-  /* uncomment if you feel like debugging this
-    for (rindex=0; rindex<svr_resc_size; rindex++)
-      {
-      fprintf(stderr,"resource: %s (%d)\n",(svr_resc_def+rindex)->rs_name,rindex);
-      }
-  */
-  return 0;
-  }
-
-
+  return(PBSE_NONE);
+  } /* END init_resc_defs() */
 
 
 
@@ -1217,7 +1225,7 @@ int set_proc_ct(
 int set_tokens_nodect(
 
   pbs_attribute *attr,
-  pbs_attribute *new,
+  pbs_attribute *new_attr,
   enum batch_op  op)
 
   {
@@ -1226,9 +1234,9 @@ int set_tokens_nodect(
 
   int ret = 0;
 
-  if (new != NULL)
+  if (new_attr != NULL)
     {
-    colon = strchr(new->at_val.at_str, (int)':');
+    colon = strchr(new_attr->at_val.at_str, (int)':');
 
     if (colon == NULL)
       {
@@ -1248,7 +1256,7 @@ int set_tokens_nodect(
 
   if (ret == 0)
     {
-    ret = set_str(attr, new, op);
+    ret = set_str(attr, new_attr, op);
     }
 
   return(ret);
@@ -1266,13 +1274,13 @@ int set_mppnodect(
   int            op)
 
   {
-  int width;
-  int nppn;
-  int nodect;
-  int have_mppwidth = 0;
-  int have_mppnppn = 0;
+  int           width;
+  int           nppn;
+  int           nodect;
+  int           have_mppwidth = 0;
+  int           have_mppnppn = 0;
   resource_def *pdef;
-  resource *pent = NULL;
+  resource     *pent = NULL;
 
   /* Go find the currently known width, nppn attributes */
 
@@ -1280,44 +1288,47 @@ int set_mppnodect(
   nppn = 0;
 
   if (((pdef = find_resc_def(svr_resc_def,"mppwidth",svr_resc_size))) &&
-    ((pent = find_resc_entry(attr,pdef))))
+      ((pent = find_resc_entry(attr,pdef))))
     {
     width = pent->rs_value.at_val.at_long;
     have_mppwidth = 1;
     }
 
   if (((pdef = find_resc_def(svr_resc_def,"mppnppn",svr_resc_size))) &&
-    ((pent = find_resc_entry(attr,pdef))))
+      ((pent = find_resc_entry(attr,pdef))))
     {
     nppn = pent->rs_value.at_val.at_long;
     have_mppnppn = 1;
-    }
-
-  /* Check for width less than a node */
-
-  if ((width) && (width < nppn))
-    {
-    nppn = width;
-    pent->rs_value.at_val.at_long = nppn;
-    pent->rs_value.at_flags |= ATR_VFLAG_SET;
+  
+    /* Check for width less than a node */
+    if ((width) && (width < nppn))
+      {
+      nppn = width;
+      pent->rs_value.at_val.at_long = nppn;
+      pent->rs_value.at_flags |= ATR_VFLAG_SET;
+      }
     }
 
   /* Compute an estimate for the number of nodes needed */
 
   nodect = width;
-  if (nppn>1)
+  if (nppn > 1)
     {
     nodect = (nodect + nppn - 1) / nppn;
     }
 
   /* Find or create the "mppnodect" pbs_attribute entry */
 
-  if (((pdef = find_resc_def(svr_resc_def,"mppnodect",svr_resc_size))) &&
-    (((pent = find_resc_entry(attr,pdef)) == NULL)) &&
-    (((pent = add_resource_entry(attr,pdef)) == 0)))
+  if ((pdef = find_resc_def(svr_resc_def,"mppnodect",svr_resc_size))) 
     {
-    return (PBSE_SYSTEM);
+    if (((pent = find_resc_entry(attr,pdef)) == NULL) &&
+        ((pent = add_resource_entry(attr,pdef)) == NULL))
+      {
+      return(PBSE_SYSTEM);
+      }
     }
+  else
+    return(PBSE_SYSTEM);
 
   /* Update the value */
 
@@ -1329,8 +1340,24 @@ int set_mppnodect(
     {
     pent->rs_value.at_val.at_long = nodect;
     }
+
   pent->rs_value.at_flags |= ATR_VFLAG_SET;
 
-  return (0);
-
+  return(PBSE_NONE);
   } /* END set_mppnodect() */
+
+
+
+int encode_procct(
+
+  pbs_attribute  *attr,   /* ptr to pbs_attribute */
+  tlist_head     *phead,  /* head of attrlist list */
+  char           *atname, /* pbs_attribute name */
+  char           *rsname, /* resource name or null */
+  int             mode,   /* encode mode, unused here */
+  int             perm)   /* only used for resources */
+
+  {
+  return(0);
+  }
+

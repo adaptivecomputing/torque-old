@@ -145,7 +145,6 @@
 #include "dynamic_string.h"
 #include "svr_func.h" /* get_svr_attr_* */
 #include "track_alps_reservations.h"
-#include "req_signal.h" /* issue_signal */
 #include "issue_request.h" /* release_req */
 #include "ji_mutex.h"
 #include "user_info.h"
@@ -169,6 +168,7 @@ extern struct batch_request *setup_cpyfiles(struct batch_request *,job *,char*,c
 extern int job_log_open(char *, char *);
 extern int log_job_record(char *buf);
 extern void check_job_log(struct work_task *ptask);
+int issue_signal(job **, char *, void(*)(batch_request *), void *);
 
 /* Local Private Functions */
 
@@ -413,7 +413,6 @@ int job_abt(
   char  *text)  /* I (optional) */
 
   {
-  char *myid = "job_abt";
   char  log_buf[LOCAL_LOG_BUF_SIZE];
   int   old_state;
   int   old_substate;
@@ -457,13 +456,13 @@ int job_abt(
     {
     svr_setjobstate(pjob, JOB_STATE_RUNNING, JOB_SUBSTATE_ABORT, FALSE);
 
-    if ((rc = issue_signal(&pjob, "SIGKILL", release_req, NULL)) != 0)
+    if ((rc = issue_signal(&pjob, "SIGKILL", free_br, NULL)) != 0)
       {
       if (pjob != NULL)
         {
         sprintf(log_buf, msg_abt_err, pjob->ji_qs.ji_jobid, old_substate);
         
-        log_err(-1, myid, log_buf);
+        log_err(-1, __func__, log_buf);
         
         if ((pjob->ji_qs.ji_svrflags & JOB_SVFLG_HERE) == 0)
           {
@@ -476,13 +475,14 @@ int job_abt(
         
         if (pjob->ji_wattr[JOB_ATR_depend].at_flags & ATR_VFLAG_SET)
           {
-          depend_on_term(pjob);
+          unlock_ji_mutex(pjob, __func__, "1a",LOGLEVEL);
+          depend_on_term(job_id);
           pjob = svr_find_job(job_id, TRUE);
           }
         
         /* update internal array bookeeping values */
         if ((pjob != NULL) &&
-            (pjob->ji_arraystruct != NULL) &&
+            (pjob->ji_arraystructid[0] != '\0') &&
             (pjob->ji_is_array_template == FALSE))
           {
           job_array *pa = get_jobs_array(&pjob);
@@ -495,12 +495,7 @@ int job_abt(
             update_array_values(pa,old_state,aeTerminate,
                 job_id, job_atr_hold, job_exit_status);
             
-            if (LOGLEVEL >= 7)
-              {
-              sprintf(log_buf, "unlocking ai_mutex: %s", myid);
-              log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, job_id, log_buf);
-              }
-            pthread_mutex_unlock(pa->ai_mutex);
+            unlock_ai_mutex(pa, __func__, "1", LOGLEVEL);
             pjob = svr_find_job(job_id, TRUE);
             }
           }
@@ -520,7 +515,7 @@ int job_abt(
     sprintf(log_buf, msg_abt_err,
       pjob->ji_qs.ji_jobid,
       old_substate);
-    log_err(-1, myid, log_buf);
+    log_err(-1, __func__, log_buf);
     unlock_ji_mutex(pjob, __func__, "2", LOGLEVEL);
     }
   else
@@ -537,13 +532,14 @@ int job_abt(
     if (pjob->ji_wattr[JOB_ATR_depend].at_flags & ATR_VFLAG_SET)
       {
       strcpy(job_id, pjob->ji_qs.ji_jobid);
-      depend_on_term(pjob);
+      unlock_ji_mutex(pjob, __func__, "1b", LOGLEVEL);
+      depend_on_term(job_id);
       pjob = svr_find_job(job_id, TRUE);
       }
 
     /* update internal array bookeeping values */
     if ((pjob != NULL) &&
-        (pjob->ji_arraystruct != NULL) &&
+        (pjob->ji_arraystructid[0] != '\0') &&
         (pjob->ji_is_array_template == FALSE))
       {
       job_array *pa = get_jobs_array(&pjob);
@@ -556,12 +552,7 @@ int job_abt(
         update_array_values(pa,old_state,aeTerminate,
             job_id, job_atr_hold, job_exit_status);
         
-        if (LOGLEVEL >= 7)
-          {
-          sprintf(log_buf, "unlocking ai_mutex: %s", myid);
-          log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, job_id, log_buf);
-          }
-        pthread_mutex_unlock(pa->ai_mutex);
+        unlock_ai_mutex(pa, __func__, "1", LOGLEVEL);
         pjob = svr_find_job(job_id, TRUE);
         }
       }
@@ -676,7 +667,6 @@ job *job_alloc(void)
   pj->ji_qs.qs_version = PBS_QS_VERSION;
 
   CLEAR_HEAD(pj->ji_rejectdest);
-  pj->ji_arraystruct = NULL;
   pj->ji_is_array_template = FALSE;
 
   pj->ji_momhandle = -1;  /* mark mom connection invalid */
@@ -725,7 +715,7 @@ void job_free(
     }
 
   if (pj->ji_qs.ji_state != JOB_STATE_TRANSIT)
-    decrement_queued_jobs(pj->ji_wattr[JOB_ATR_job_owner].at_val.at_str);
+    decrement_queued_jobs(&users, pj->ji_wattr[JOB_ATR_job_owner].at_val.at_str);
 
   /* remove any calloc working pbs_attribute space */
   for (i = 0;i < JOB_ATR_LAST;i++)
@@ -840,7 +830,6 @@ job *job_clone(
   char           basename[PBS_JOBBASE+1];
   char           namebuf[MAXPATHLEN + 1];
   char           buf[256];
-  char          *pc;
   int            fds;
 
   int            i;
@@ -890,13 +879,17 @@ job *job_clone(
   hostname = index(oldid, '.');
 
   *bracket = '\0';
-  hostname++;
-
-  pnewjob->ji_qs.ji_jobid[PBS_MAXSVRJOBID-1] = '\0';
-
-  snprintf(pnewjob->ji_qs.ji_jobid, PBS_MAXSVRJOBID, "%s[%d].%s",
-    oldid, taskid, hostname);
-
+  if (hostname != NULL)
+    {
+    hostname++;
+    snprintf(pnewjob->ji_qs.ji_jobid, sizeof(pnewjob->ji_qs.ji_jobid), 
+      "%s[%d].%s",
+      oldid, taskid, hostname);
+    }
+  else
+    snprintf(pnewjob->ji_qs.ji_jobid, sizeof(pnewjob->ji_qs.ji_jobid),
+      "%s[%d]",
+      oldid, taskid);
 
   /* update the job filename
    * We could optimize the sub-jobs to all use the same file. We would need a
@@ -908,7 +901,11 @@ job *job_clone(
    * make up new job file name, it is based on the new jobid
    */
 
-  snprintf(basename, PBS_JOBBASE, "%s-%d.%s", oldid, taskid, hostname);
+  if (hostname != NULL)
+    snprintf(basename, sizeof(basename), "%s-%d.%s", oldid, taskid, hostname);
+  else
+    snprintf(basename, sizeof(basename), "%s-%d", oldid, taskid);
+
   free(oldid);
 
   do
@@ -922,24 +919,8 @@ job *job_clone(
       {
       if (errno == EEXIST)
         {
-        pc = basename + strlen(basename) - 1;
-
-        while (!isprint((int)*pc) || (*pc == '-'))
-          {
-          pc--;
-
-          if (pc <= basename)
-            {
-            /* FAILURE */
-
-            log_err(errno, __func__, "job file is corrupt");
-            job_free(pnewjob, FALSE);
-
-            return(NULL);
-            }
-          }
-
-        (*pc)++;
+        job_free(pnewjob, FALSE);
+        return((job *)1);
         }
       else
         {
@@ -962,7 +943,8 @@ job *job_clone(
 
   for (i = 0; i < JOB_ATR_LAST; i++)
     {
-    if (template_job->ji_wattr[i].at_flags & ATR_VFLAG_SET)
+    if ((template_job->ji_wattr[i].at_flags & ATR_VFLAG_SET) &&
+        (i != JOB_ATR_job_array_request))
       {
       if ((i == JOB_ATR_errpath) || (i == JOB_ATR_outpath) || (i == JOB_ATR_jobname))
         {
@@ -1048,16 +1030,11 @@ job *job_clone(
     }
 
   pa->job_ids[taskid] = strdup(pnewjob->ji_qs.ji_jobid);
-  pnewjob->ji_arraystruct = pa;
+  strcpy(pnewjob->ji_arraystructid, pa->ai_qs.parent_id);
 
   if (release_mutex == TRUE)
     {
-    pthread_mutex_unlock(pa->ai_mutex);
-    if (LOGLEVEL >= 7)
-      {
-      sprintf(log_buf, "unlocked ai_mutex: %s", __func__);
-      log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, pnewjob->ji_qs.ji_jobid, log_buf);
-      }
+    unlock_ai_mutex(pa, __func__, "1", LOGLEVEL);
     }
 
   return(pnewjob);
@@ -1080,7 +1057,6 @@ void *job_clone_wt(
   void *cloned_id)
 
   {
-  char                log_buf[LOCAL_LOG_BUF_SIZE];
   job                *template_job;
   job                *pjob;
   job                *pjobclone;
@@ -1093,6 +1069,7 @@ void *job_clone_wt(
   int                 newsub;
   int                 rc;
   char                namebuf[MAXPATHLEN];
+  char                arrayid[PBS_MAXSVRJOBID + 1];
   job_array          *pa;
 
   array_request_node *rn;
@@ -1118,6 +1095,8 @@ void *job_clone_wt(
     return(NULL);
     }
 
+  strcpy(arrayid, pa->ai_qs.parent_id);
+
   free(jobid);
 
   snprintf(namebuf, sizeof(namebuf), "%s%s.AR",
@@ -1131,6 +1110,14 @@ void *job_clone_wt(
 
     for (i = start; i <= end; i++)
       {
+      if (pa->job_ids[i] != NULL)
+        {
+        /* This job already exists. This can happen when trying to recover a job
+         * array that wasn't fully cloned. */
+        rn->start++;
+        continue;
+        }
+
       lock_ji_mutex(template_job, __func__, NULL, LOGLEVEL);
       pjobclone = job_clone(template_job, pa, i);
       unlock_ji_mutex(template_job, __func__, "3", LOGLEVEL);
@@ -1138,6 +1125,12 @@ void *job_clone_wt(
       if (pjobclone == NULL)
         {
         log_err(-1, __func__, "unable to clone job in job_clone_wt");
+        continue;
+        }
+      else if (pjobclone == (job *)1)
+        {
+        /* this happens if we attempted to clone an existing job */
+        rn->start++;
         continue;
         }
 
@@ -1156,21 +1149,23 @@ void *job_clone_wt(
       if ((rc = svr_enquejob(pjobclone, FALSE, prev_index)))
         {
         /* XXX need more robust error handling */
-        pthread_mutex_unlock(pa->ai_mutex);
+        unlock_ai_mutex(pa, __func__, "1", LOGLEVEL);
 
         if (rc != PBSE_JOB_RECYCLED)
           svr_job_purge(pjobclone);
 
-        pthread_mutex_lock(pa->ai_mutex);
+        pa = get_array(arrayid);
         continue;
         }
 
       if (job_save(pjobclone, SAVEJOB_FULL, 0) != 0)
         {
         /* XXX need more robust error handling */
-        pthread_mutex_unlock(pa->ai_mutex);
+        unlock_ai_mutex(pa, __func__, "2", LOGLEVEL);
         svr_job_purge(pjobclone);
-        pthread_mutex_lock(pa->ai_mutex);
+       
+        pa = get_array(arrayid);
+        
         continue;
         }
       
@@ -1240,13 +1235,7 @@ void *job_clone_wt(
       }
     }
 
-  if (LOGLEVEL >= 7)
-    {
-    sprintf(log_buf, "unlocked ai_mutex: %s", __func__);
-    log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, pa->ai_qs.parent_id, log_buf);
-    }
-  
-  pthread_mutex_unlock(pa->ai_mutex);
+  unlock_ai_mutex(pa, __func__, "3", LOGLEVEL);
   return(NULL);
   }  /* END job_clone_wt */
 
@@ -1460,7 +1449,7 @@ void remove_checkpoint(
     preq->rq_extra = NULL;
     /* The preq is freed in relay_to_mom (failure)
      * or in issue_Drequest (success) */
-    if (relay_to_mom(&pjob, preq, release_req) == 0)
+    if (relay_to_mom(&pjob, preq, NULL) == PBSE_NONE)
       {
       if (pjob != NULL)
         pjob->ji_qs.ji_svrflags &= ~JOB_SVFLG_CHECKPOINT_COPIED;
@@ -1475,6 +1464,8 @@ void remove_checkpoint(
         pjob->ji_qs.ji_jobid,
         "unable to remove checkpoint file for job");
       }
+
+    free_br(preq);
     }
 
   return;
@@ -1545,19 +1536,22 @@ int record_jobinfo(
   append_dynamic_string(buffer, "<Jobinfo>\n");
   append_dynamic_string(buffer, "\t<Job_Id>");
   append_dynamic_string(buffer, pjob->ji_qs.ji_jobid);
-  append_dynamic_string(buffer, "</JobId>");
-  
+  append_dynamic_string(buffer, "</JobId>\n");
+ 
+ #if 0
   if ((rc = log_job_record(buffer->str)) != PBSE_NONE)
     {
     log_err(rc, __func__, "log_job_record failed");
     free_dynamic_string(buffer);
     return(rc);
     }
+#endif
 
   for (i = 0; i < JOB_ATR_LAST; i++)
     {
+#if 0
     clear_dynamic_string(buffer);
-
+#endif
     pattr = &(pjob->ji_wattr[i]);
 
     if (pattr->at_flags & ATR_VFLAG_SET)
@@ -1583,14 +1577,16 @@ int record_jobinfo(
 
       append_dynamic_string(buffer, "</");
       append_dynamic_string(buffer, job_attr_def[i].at_name);
-      append_dynamic_string(buffer, ">");
+      append_dynamic_string(buffer, ">\n");
 
+#if 0
       if ((rc = log_job_record(buffer->str)) != PBSE_NONE)
         {
         log_err(rc, __func__, "log_job_record failed recording attributes");
         free_dynamic_string(buffer);
         return(rc);
         }
+#endif
       }
     }
   
@@ -1605,13 +1601,14 @@ int record_jobinfo(
     snprintf(namebuf, sizeof(namebuf), "%s%s%s",
       path_jobs, pjob->ji_qs.ji_fileprefix, JOB_SCRIPT_SUFFIX);
     
-    if ((fd = open(namebuf, O_RDONLY)) > 0)
+    if ((fd = open(namebuf, O_RDONLY)) >= 0)
       {
-      while ((bytes_read = read(fd, job_script_buf, sizeof(job_script_buf))) > 0)
+      memset(job_script_buf, 0, sizeof(job_script_buf));
+
+      while ((bytes_read = read(fd, job_script_buf, sizeof(job_script_buf) - 1)) > 0)
         {
-        job_script_buf[bytes_read] = '\0';
-        
         rc = append_dynamic_string(buffer, job_script_buf);
+        memset(job_script_buf, 0, sizeof(job_script_buf));
         }
 
       close(fd);
@@ -1623,15 +1620,19 @@ int record_jobinfo(
    
     append_dynamic_string(buffer, "\t</job_script>\n");
     
+#if 0
     if ((rc = log_job_record(buffer->str)) != PBSE_NONE)
       {
       free_dynamic_string(buffer);
       log_err(rc, __func__, "log_job_record failed");
       return(rc);
       }
+#endif
     }
-  
+ 
+#if 0
   clear_dynamic_string(buffer);
+#endif
 
   if ((rc = append_dynamic_string(buffer, "</Jobinfo>\n")) != PBSE_NONE)
     {
@@ -1680,7 +1681,7 @@ int svr_job_purge(
   strcpy(job_fileprefix, pjob->ji_qs.ji_fileprefix);
   job_substate = pjob->ji_qs.ji_substate;
   job_is_array_template = pjob->ji_is_array_template;
-  job_has_arraystruct = ((pjob->ji_arraystruct == NULL)?FALSE:TRUE);
+  job_has_arraystruct = ((pjob->ji_arraystructid[0] == '\0') ? FALSE:TRUE);
   job_has_checkpoint_file = pjob->ji_wattr[JOB_ATR_checkpoint_name].at_flags;
 
   if (LOGLEVEL >= 10)
@@ -1723,27 +1724,25 @@ int svr_job_purge(
 
     if (pjob != NULL)
       {
-      /* erase the pointer to this job in the job array */
-      free(pa->job_ids[pjob->ji_wattr[JOB_ATR_job_array_id].at_val.at_long]);
-      pa->job_ids[pjob->ji_wattr[JOB_ATR_job_array_id].at_val.at_long] = NULL;
-      
-      /* if there are no more jobs in the arry,
-       * then we can clean that up too */
-      pa->ai_qs.num_purged++;
-      if (pa->ai_qs.num_purged == pa->ai_qs.num_jobs)
+      if (pa != NULL)
         {
-        /* array_delete will unlock pa->ai_mutex */
-        array_delete(pa);
-        }
-      else
-        {
-        array_save(pa);
+        /* erase the pointer to this job in the job array */
+        free(pa->job_ids[pjob->ji_wattr[JOB_ATR_job_array_id].at_val.at_long]);
+        pa->job_ids[pjob->ji_wattr[JOB_ATR_job_array_id].at_val.at_long] = NULL;
         
-        pthread_mutex_unlock(pa->ai_mutex);
-        if (LOGLEVEL >=7)
+        /* if there are no more jobs in the arry,
+         * then we can clean that up too */
+        pa->ai_qs.num_purged++;
+        if (pa->ai_qs.num_purged == pa->ai_qs.num_jobs)
           {
-          sprintf(log_buf, "unlocked ai_mutex: %s", __func__);
-          log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, pjob->ji_qs.ji_jobid, log_buf);
+          /* array_delete will unlock pa->ai_mutex */
+          array_delete(pa);
+          }
+        else
+          {
+          array_save(pa);
+          
+          unlock_ai_mutex(pa, __func__, "1", LOGLEVEL);
           }
         }
       }
@@ -1890,780 +1889,6 @@ int svr_job_purge(
 
 
 
-/*
- * get_correct_jobname() - makes sure the job searches for the correct name
- * necessary because of SRV_ATR_display_job_server_suffix and
- * SRV_ATR_job_suffix_alias
- *
- * allocs the correct job name
- * @param jobid (I) - the jobid as passed in (NUM.SERVER_NAME)
- * @return a pointer to the correct job name (alloc'd)
- */
-char *get_correct_jobname(
-
-  const char *jobid) /* I */
-
-  {
-  char *correct = NULL;
-  char *dot;
-  /* first suffix could be the server name or the alias */
-  char *first_suffix = NULL;
-
-  /* second suffix can only be the alias */
-  char *second_suffix = NULL;
-  int   server_suffix = TRUE;
-
-  int len;
-
-  long  display_suffix = TRUE;
-  char *alias = NULL;
-
-  get_svr_attr_l(SRV_ATR_display_job_server_suffix, &display_suffix);
-  if (display_suffix == FALSE)
-    server_suffix = FALSE;
-
-  if ((dot = strchr(jobid,'.')) != NULL)
-    {
-    first_suffix = dot + 1;
-
-    if ((dot = strchr(first_suffix,'.')) != NULL)
-      {
-      second_suffix = dot + 1;
-      }
-    }
-
-  dot = NULL;
-
-  /* check current settings */
-  get_svr_attr_str(SRV_ATR_job_suffix_alias, &alias);
-  if ((alias != NULL) &&
-      (server_suffix == TRUE))
-    {
-    /* display the server suffix and the alias */
-
-    /* check if alias is already there */
-    if (second_suffix != NULL)
-      {
-      if (strcmp(second_suffix,alias) == 0)
-        {
-        correct = strdup(jobid);
-
-        if (correct == NULL)
-          log_err(-1, __func__, "ERROR:    Fatal - Cannot allocate memory\n");
-
-        return(correct);
-        }
-      }
-    else if (first_suffix == NULL)
-      {
-      /* alloc memory and sprint, add 3 for 2 '.' and NULL terminator */
-      len = strlen(jobid) + strlen(server_name) + strlen(alias) + 3;
-      correct = calloc(1, len);
-
-      if (correct == NULL)
-        {
-        log_err(-1, __func__, "ERROR:    Fatal - Cannot allocate memory\n");
-        return(NULL);
-        }
-
-      snprintf(correct,len,"%s.%s.%s",
-        jobid,server_name,alias);
-      }
-    else
-      {
-      /* add 2 for null terminator and '.' */
-      len = strlen(alias) + 2 + strlen(jobid);
-
-      correct = calloc(1, len);
-
-      if (correct == NULL)
-        {
-        log_err(-1, __func__, "ERROR:    Fatal - Cannot allocate memory\n");
-        return(NULL);
-        }
-
-      snprintf(correct,len,"%s.%s",jobid,alias);
-      }
-    } /* END if (server_suffix && alias) */
-  else if (server_suffix == TRUE)
-    {
-    /* just the server suffix */
-
-    /* check for the server suffix */
-    if (second_suffix != NULL)
-      {
-      dot = second_suffix - 1;
-      *dot = '\0';
-
-      len = strlen(jobid) + 1 ;
-
-      correct = calloc(1, len);
-
-      if (correct == NULL)
-        {
-        log_err(-1, __func__, "ERROR:    Fatal - Cannot allocate memory\n");
-        return(NULL);
-        }
-
-      snprintf(correct,len,"%s",jobid);
-      *dot = '.';
-      }
-    else if (first_suffix != NULL)
-      {
-      correct = strdup(jobid);
-
-      if (correct == NULL)
-        {
-        log_err(-1, __func__, "ERROR:    Fatal - Cannot allocate memory\n");
-        return(NULL);
-        }
-      }
-    else
-      {
-      len = strlen(jobid) + strlen(server_name) + 2;
-
-      correct = calloc(1, len);
-
-      if (correct == NULL)
-        {
-        log_err(-1, __func__, "ERROR:    Fatal - Cannot allocate memory\n");
-        return(NULL);
-        }
-
-      snprintf(correct,len,"%s.%s",
-        jobid,server_name);
-      }
-    } /* END if (just server_suffix) */
-  else if (alias != NULL)
-    {
-    /* just the alias, not the server */
-
-    if (first_suffix == NULL)
-      {
-      len = strlen(jobid) + strlen(alias) + 2;
-
-      correct = calloc(1, len);
-
-      if (correct == NULL)
-        {
-        log_err(-1, __func__, "ERROR:    Fatal - Cannot allocate memory\n");
-        return(NULL);
-        }
-
-      snprintf(correct,len,"%s.%s",jobid,alias);
-      }
-    else
-      {
-      len = strlen(alias) + 2;
-
-      dot = first_suffix - 1;
-      *dot = '\0';
-
-      len += strlen(jobid);
-      correct = calloc(1, len);
-
-      if (correct == NULL)
-        {
-        log_err(-1, __func__, "ERROR:    Fatal - Cannot allocate memory\n");
-        return(NULL);
-        }
-
-      snprintf(correct,len,"%s.%s",
-        jobid,
-        alias);
-
-      *dot = '.';
-      }
-    } /* END else if (just alias) */
-  else
-    {
-    /* no server suffix nor alias */
-    if (first_suffix != NULL)
-      {
-      dot = first_suffix - 1;
-      *dot = '\0';
-      }
-
-    len = strlen(jobid) + 1;
-    correct = calloc(1, len);
-
-    if (correct == NULL)
-      {
-      log_err(-1, __func__, "ERROR:    Fatal - Cannot allocate memory\n");
-      return(NULL);
-      }
-
-    snprintf(correct,len,"%s",jobid);
-
-    if (first_suffix != NULL)
-      *dot = '.';
-    }
-
-  return(correct);
-  } /* END get_correct_jobname() */
-
-
-
-
-
-/*
- * Searches the array passed in for the job_id
- * @parent svr_find_job()
- */
-
-job *find_job_by_array(
-    
-  struct all_jobs *aj,
-  char            *job_id,
-  int              get_subjob)
-
-  {
-  job *pj = NULL;
-  int  i;
-
-  pthread_mutex_lock(aj->alljobs_mutex);
-  
-  i = get_value_hash(aj->ht, job_id);
-  
-  if (i >= 0)
-    pj = (job *)aj->ra->slots[i].item;
-  if (pj != NULL)
-    lock_ji_mutex(pj, __func__, NULL, LOGLEVEL);
-  
-  pthread_mutex_unlock(aj->alljobs_mutex);
-  
-  if (pj != NULL)
-    {
-    if (get_subjob == TRUE)
-      {
-      if (pj->ji_cray_clone != NULL)
-        {
-        pj = pj->ji_cray_clone;
-        unlock_ji_mutex(pj->ji_parent_job, __func__, NULL, LOGLEVEL);
-        lock_ji_mutex(pj, __func__, NULL, LOGLEVEL);
-        }
-      }
-
-    if (pj->ji_being_recycled == TRUE)
-      {
-      unlock_ji_mutex(pj, __func__, "1", LOGLEVEL);
-      pj = NULL;
-      }
-    }
-
-  return(pj);
-  } /* END find_job_by_array() */
-
-
-
-
-/*
- * svr_find_job() - find job by jobid
- *
- * Search list of all server jobs for one with same job id
- * Return NULL if not found or pointer to job struct if found
- * @param jobid - get the job whose jobid matches jobid
- * @param get_subjob - whether or not we should return the sub
- * job (for heterogeneous jobs) if there is one
- */
-
-job *svr_find_job(
-
-  char *jobid,      /* I */
-  int   get_subjob) /* I */
-
-  {
-  char *at;
-  char *comp;
-  int   different = FALSE;
-  char *dash = NULL;
-  char  without_dash[PBS_MAXSVRJOBID + 1];
-
-  job  *pj = NULL;
-
-  if (LOGLEVEL >= 10)
-    LOG_EVENT(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, __func__, jobid);
-
-  if ((at = strchr(jobid, '@')) != NULL)
-    *at = '\0'; /* strip off @server_name */
-
-  /* jobid-0.server indicates the external sub-job of a heterogeneous
-   * job. For this case we want to get jobid.server, find that, and 
-   * the get the external sub-job */
-  if (get_subjob == TRUE)
-    {
-    if ((dash = strchr(jobid, '-')) != NULL)
-      {
-      *dash = '\0';
-      snprintf(without_dash, sizeof(without_dash), "%s%s", jobid, dash + 2);
-      jobid = without_dash;
-      }
-    }
-
-  if ((is_svr_attr_set(SRV_ATR_display_job_server_suffix)) ||
-      (is_svr_attr_set(SRV_ATR_job_suffix_alias)))
-    {
-    comp = get_correct_jobname(jobid);
-    different = TRUE;
-
-    if (comp == NULL)
-      return(NULL);
-    }
-  else
-    {
-    comp = jobid;
-    }
-
-  if (strstr(jobid,"[]") == NULL)
-    {
-    /* if we're searching for the external we want find_job_by_array to 
-     * return the parent, but if we're searching for the cray subjob then
-     * we want find_job_by_array to return the sub job */
-    pj = find_job_by_array(&alljobs, comp, (dash != NULL) ? FALSE : get_subjob);
-    }
-
-  /* when remotely routing jobs, they are removed from the 
-   * regular job list first and the array summary after. 
-   * Attempt to find them there if NULL
-   * OR it's an array, try to find the job */
-  if (pj == NULL)
-    {
-    /* see the comment on the above call to find_job_by_array() */
-    pj = find_job_by_array(&array_summary, comp, (dash != NULL) ? FALSE : get_subjob);
-    }
-
-  if (at)
-    *at = '@'; /* restore @server_name */
-
-  if ((get_subjob == TRUE) &&
-      (pj != NULL))
-    {
-    if (dash != NULL)
-      {
-      *dash = '-';
-      
-      if (pj->ji_external_clone != NULL)
-        {
-        pj = pj->ji_external_clone;
-        
-        lock_ji_mutex(pj, __func__, NULL, 0);
-        unlock_ji_mutex(pj->ji_parent_job, __func__, NULL, 0);
-
-        if (pj->ji_being_recycled == TRUE)
-          {
-          unlock_ji_mutex(pj, __func__, NULL, 0);
-          pj = NULL;
-          }
-        }
-      else
-        {
-        unlock_ji_mutex(pj, __func__, NULL, 0);
-        pj = NULL;
-        }
-      }
-    }
-
-  if (different)
-    free(comp);
-
-  return(pj);  /* may be NULL */
-  }   /* END svr_find_job() */
-
-
-
-
-/* initializes the all_jobs array */
-void initialize_all_jobs_array(
-    
-  struct all_jobs *aj)
-
-  {
-  aj->ra = initialize_resizable_array(INITIAL_JOB_SIZE);
-  aj->ht = create_hash(INITIAL_HASH_SIZE);
-
-  aj->alljobs_mutex = calloc(1, sizeof(pthread_mutex_t));
-  pthread_mutex_init(aj->alljobs_mutex, NULL);
-  } /* END initialize_all_jobs_array() */
-
-
-
-
-/*
- * insert a new job into the array
- *
- * @param pjob - the job to be inserted
- * @return PBSE_NONE on success 
- */
-int insert_job(
-    
-  struct all_jobs *aj, 
-  job             *pjob)
-
-  {
-  int           rc;
-
-  pthread_mutex_lock(aj->alljobs_mutex);
-
-  if ((rc = insert_thing(aj->ra,pjob)) == -1)
-    {
-    rc = ENOMEM;
-    log_err(rc, __func__, "No memory to resize the array...SYSTEM FAILURE\n");
-    }
-  else
-    {
-    add_hash(aj->ht, rc, pjob->ji_qs.ji_jobid);
-
-    rc = PBSE_NONE;
-    }
-
-  pthread_mutex_unlock(aj->alljobs_mutex);
-
-  return(rc);
-  } /* END insert_job() */
-
-
-
-
-
-/*
- * insert a new job into the array after a previous one
- *
- * @param already_in - the job this job should follow 
- * @param pjob - the job to be inserted
- * @return PBSE_NONE if the job is inserted correctly
- */
-int insert_job_after(
-
-  struct all_jobs *aj,
-  job             *already_in,
-  job             *pjob)
-
-  {
-  int rc;
-  int i;
-
-  pthread_mutex_lock(aj->alljobs_mutex);
-
-  i = get_value_hash(aj->ht,already_in->ji_qs.ji_jobid);
-  
-  if (i < 0)
-    rc = THING_NOT_FOUND;
-  else
-    {
-    if ((rc = insert_thing_after(aj->ra,pjob,i)) == -1)
-      {
-      rc = ENOMEM;
-      log_err(rc, __func__, "No memory to resize the array...SYSTEM FAILURE");
-      }
-    else
-      {
-      add_hash(aj->ht,rc,pjob->ji_qs.ji_jobid);
-      rc = PBSE_NONE;
-      }
-    }
-
-  pthread_mutex_unlock(aj->alljobs_mutex);
-
-  return(rc);
-  } /* END insert_job_after() */
-
-
-
-
-int insert_job_after_index(
-
-  struct all_jobs *aj,
-  int              index,
-  job             *pjob)
-
-  {
-  int rc;
-
-  pthread_mutex_lock(aj->alljobs_mutex);
-
-  if ((rc = insert_thing_after(aj->ra, pjob, index)) == -1)
-    {
-    rc = ENOMEM;
-    log_err(rc, __func__, "No memory to resize the array...SYSTEM FAILURE");
-    }
-  else
-    {
-    add_hash(aj->ht, rc, pjob->ji_qs.ji_jobid);
-    rc = PBSE_NONE;
-    }
-
-  pthread_mutex_unlock(aj->alljobs_mutex);
-
-  return(rc);
-  } /* END insert_job_after_index() */
-
-
-
-
-
-/*
- */
-int insert_job_first(
-
-  struct all_jobs *aj,
-  job             *pjob)
-
-  {
-  int          rc;
-
-  pthread_mutex_lock(aj->alljobs_mutex);
-
-  if ((rc = insert_thing_after(aj->ra,pjob,ALWAYS_EMPTY_INDEX)) == -1)
-    {
-    rc = ENOMEM;
-    log_err(rc, __func__, "No memory to resize the array...SYSTEM FAILURE");
-    }
-  else
-    {
-    add_hash(aj->ht,rc,pjob->ji_qs.ji_jobid);
-    rc = PBSE_NONE;
-    }
-
-  pthread_mutex_unlock(aj->alljobs_mutex);
-
-  return(rc);
-  } /* END insert_job_first () */
-
-
-
-
-/*
- * get the job's index in the array 
- */
-
-int get_jobs_index(
-
-  struct all_jobs *aj,
-  job             *pjob)
-
-  {
-  int  index;
-
-  if (pthread_mutex_trylock(aj->alljobs_mutex))
-    {
-    unlock_ji_mutex(pjob, __func__, "1", LOGLEVEL);
-    pthread_mutex_lock(aj->alljobs_mutex);
-    lock_ji_mutex(pjob, __func__, NULL, LOGLEVEL);
-
-    if (pjob->ji_being_recycled == TRUE)
-      {
-      pthread_mutex_unlock(aj->alljobs_mutex);
-      unlock_ji_mutex(pjob, __func__, "2", LOGLEVEL);
-      return(-1);
-      }
-    }
-
-  index = get_value_hash(aj->ht, pjob->ji_qs.ji_jobid);
-  pthread_mutex_unlock(aj->alljobs_mutex);
-
-  return(index);
-  } /* END get_jobs_index() */
-
-
-
-
-/*
- * check if an object is in the all_jobs object
- */
-
-int has_job(
-
-  struct all_jobs *aj,
-  job             *pjob)
-
-  {
-  int  rc;
-  char jobid[PBS_MAXSVRJOBID + 1];
-
-  strcpy(jobid, pjob->ji_qs.ji_jobid);
-
-  if (pthread_mutex_trylock(aj->alljobs_mutex))
-    {
-    unlock_ji_mutex(pjob, __func__, "1", LOGLEVEL);
-    pthread_mutex_lock(aj->alljobs_mutex);
-    lock_ji_mutex(pjob, __func__, NULL, LOGLEVEL);
-
-    if (pjob->ji_being_recycled == TRUE)
-      {
-      pthread_mutex_unlock(aj->alljobs_mutex);
-      unlock_ji_mutex(pjob, __func__, "1", LOGLEVEL);
-
-      return(PBSE_JOB_RECYCLED);
-      }
-    }
-
-  if (get_value_hash(aj->ht, pjob->ji_qs.ji_jobid) < 0)
-    rc = FALSE;
-  else
-    rc = TRUE;
-
-  pthread_mutex_unlock(aj->alljobs_mutex);
-
-  return(rc);
-  } /* END has_job() */
-
-
-
-
-
-/* 
- * remove a job from the array
- *
- * @param pjob - the job to remove
- * @return PBSE_NONE if the job is removed 
- */
-
-int  remove_job(
-   
-  struct all_jobs *aj, 
-  job             *pjob)
-
-  {
-  int rc = PBSE_NONE;
-  int index;
-
-  if (LOGLEVEL >= 10)
-    LOG_EVENT(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, __func__, pjob->ji_qs.ji_jobid);
-  if (pthread_mutex_trylock(aj->alljobs_mutex))
-    {
-    unlock_ji_mutex(pjob, __func__, "1", LOGLEVEL);
-    pthread_mutex_lock(aj->alljobs_mutex);
-    lock_ji_mutex(pjob, __func__, NULL, LOGLEVEL);
-
-    if (pjob->ji_being_recycled == TRUE)
-      {
-      pthread_mutex_unlock(aj->alljobs_mutex);
-      unlock_ji_mutex(pjob, __func__, "1", LOGLEVEL);
-      return(PBSE_JOB_RECYCLED);
-      }
-    }
-
-  if ((index = get_value_hash(aj->ht,pjob->ji_qs.ji_jobid)) < 0)
-    rc = THING_NOT_FOUND;
-  else
-    {
-    remove_thing_from_index(aj->ra,index);
-    remove_hash(aj->ht,pjob->ji_qs.ji_jobid);
-    }
-
-  pthread_mutex_unlock(aj->alljobs_mutex);
-
-  return(rc);
-  } /* END remove_job() */
-
-
-
-
-
-job *next_job(
-
-  struct all_jobs *aj,
-  int             *iter)
-
-  {
-  job *pjob;
-
-  pthread_mutex_lock(aj->alljobs_mutex);
-
-  pjob = (job *)next_thing(aj->ra,iter);
-
-  pthread_mutex_unlock(aj->alljobs_mutex);
-
-  if (pjob != NULL)
-    {
-    lock_ji_mutex(pjob, __func__, NULL, LOGLEVEL);
-
-    if (pjob->ji_being_recycled == TRUE)
-      {
-      unlock_ji_mutex(pjob, __func__, "1", LOGLEVEL);
-
-      pjob = next_job(aj,iter);
-      }
-    }
-
-  return(pjob);
-  } /* END next_job() */
-
-
-
-
-
-job *next_job_from_back(
-
-  struct all_jobs *aj,
-  int             *iter)
-
-  {
-  job *pjob;
-
-  pthread_mutex_lock(aj->alljobs_mutex);
-
-  pjob = (job *)next_thing_from_back(aj->ra,iter);
-  if (pjob != NULL)
-    lock_ji_mutex(pjob, __func__, NULL, LOGLEVEL);
-
-  pthread_mutex_unlock(aj->alljobs_mutex);
-
-  if (pjob != NULL)
-    {
-    if (pjob->ji_being_recycled == TRUE)
-      {
-      unlock_ji_mutex(pjob, __func__, "1", LOGLEVEL);
-
-      pjob = next_job_from_back(aj,iter);
-      }
-    }
-
-  return(pjob);
-  } /* END next_job_from_back() */
-
-
-
-
-/* currently this function can only be called for jobs in the alljobs array */
-int swap_jobs(
-
-  struct all_jobs *aj,
-  job             *job1,
-  job             *job2)
-
-  {
-  int rc;
-  int new1;
-  int new2;
-
-  if (aj == NULL)
-    {
-    aj = &alljobs;
-    }
-
-  pthread_mutex_lock(aj->alljobs_mutex);
-
-  new2 = get_value_hash(aj->ht,job1->ji_qs.ji_jobid);
-  new1 = get_value_hash(aj->ht,job2->ji_qs.ji_jobid);
-
-  if ((new1 == -1) ||
-      (new2 == -1))
-    {
-    rc = THING_NOT_FOUND;
-    }
-  else
-    {
-    rc = swap_things(aj->ra,job1,job2);
-    
-    change_value_hash(aj->ht,job1->ji_qs.ji_jobid,new1);
-    change_value_hash(aj->ht,job2->ji_qs.ji_jobid,new2);
-    }
-
-  pthread_mutex_unlock(aj->alljobs_mutex);
-  
-  return(rc);
-  } /* END swap_jobs() */
 
 
 
@@ -2680,36 +1905,31 @@ job_array *get_jobs_array(
 
   {
   char       log_buf[LOCAL_LOG_BUF_SIZE];
-  char       jobid[PBS_MAXSVRJOBID];
+  char       jobid[PBS_MAXSVRJOBID + 1];
+  char       arrayid[PBS_MAXSVRJOBID + 1];
   job       *pjob = *pjob_ptr;
-  job_array *pa = pjob->ji_arraystruct;
+  job_array *pa = NULL;
 
-  if (pa != NULL)
+  strcpy(jobid, pjob->ji_qs.ji_jobid);
+
+  if (pjob->ji_arraystructid[0] != '\0')
     {
-    if (pthread_mutex_trylock(pa->ai_mutex))
+    strcpy(arrayid, pjob->ji_arraystructid);
+    unlock_ji_mutex(pjob, __func__, "1", LOGLEVEL);
+  
+    if (LOGLEVEL >= 7)
       {
-      strcpy(jobid, pjob->ji_qs.ji_jobid);
-      
-      unlock_ji_mutex(pjob, __func__, "1", LOGLEVEL);
-      if (LOGLEVEL >=7)
-        {
-        sprintf(log_buf, "locking ai_mutex: %s", __func__);
-        log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, jobid, log_buf);
-        }
+      sprintf(log_buf, "Locking ai_mutex, %s", pjob->ji_qs.ji_jobid);
+      log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, __func__, log_buf);
+      }
 
-      pthread_mutex_lock(pa->ai_mutex);
-      if (LOGLEVEL >=7)
-        {
-        sprintf(log_buf, "locked ai_mutex: %s", __func__);
-        log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, jobid, log_buf);
-        }
-      
-      if ((pjob = svr_find_job(jobid, TRUE)) == NULL)
-        {
-        pthread_mutex_unlock(pa->ai_mutex);
-        pa = NULL;
-        *pjob_ptr = NULL;
-        }
+    pa = get_array(arrayid);
+
+    if ((pjob = svr_find_job(jobid, TRUE)) == NULL)
+      {
+      unlock_ai_mutex(pa, __func__, "1", LOGLEVEL);
+      pa = NULL;
+      *pjob_ptr = NULL;
       }
     }
 

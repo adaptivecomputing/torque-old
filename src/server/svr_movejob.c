@@ -140,8 +140,8 @@ extern struct pbsnode *PGetNodeFromAddr(pbs_net_t);
 
 /* Private Functions local to this file */
 
-static int  local_move(job *, int *, struct batch_request *, int);
-static int should_retry_route(int err);
+int  local_move(job *, int *, struct batch_request *, int);
+int should_retry_route(int err);
 
 /* Global Data */
 
@@ -196,7 +196,13 @@ int svr_movejob(
   char         *toserver;
   char          log_buf[LOCAL_LOG_BUF_SIZE];
 
-  if (strlen(destination) >= (size_t)PBS_MAXROUTEDEST)
+  if (LOGLEVEL >= 7)
+    {
+    sprintf(log_buf, "%s", jobp->ji_qs.ji_jobid);
+    log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, __func__, log_buf);
+    }
+
+ if (strlen(destination) >= (size_t)PBS_MAXROUTEDEST)
     {
     sprintf(log_buf, "name %s over maximum length of %d\n",
       destination,
@@ -252,7 +258,7 @@ int svr_movejob(
  *  1 failed but try again
  */
 
-static int local_move(
+int local_move(
 
   job                  *pjob,
   int                  *my_err,
@@ -262,11 +268,26 @@ static int local_move(
   {
   pbs_queue *routing_que;
   pbs_queue *dest_que;
+  pbs_queue *tmp_que;
   char      *destination = pjob->ji_qs.ji_destin;
   int        mtype;
   char       log_buf[LOCAL_LOG_BUF_SIZE];
   char       job_id[PBS_MAXSVRJOBID+1];
   int        rc;
+
+  /* Sometimes multiple threads are trying to route the same job. Protect against this
+   * by making sure that the destionation queue and the current queue are different. 
+   * If they are the same then consider it done correctly */
+  if (!strcmp(pjob->ji_qs.ji_queue, pjob->ji_qs.ji_destin))
+    {
+    return(PBSE_NONE);
+    }
+
+  if (LOGLEVEL >= 7)
+    {
+    sprintf(log_buf, "%s", pjob->ji_qs.ji_jobid);
+    LOG_EVENT(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, __func__, log_buf);
+    }
 
   /* search for destination queue */
   /* CAUTION!!! This code is very complex - be very careful editing */
@@ -355,7 +376,7 @@ static int local_move(
   if (rc)
     return(rc);
 
-  strcpy(pjob->ji_qs.ji_queue, destination);
+  snprintf(pjob->ji_qs.ji_queue, sizeof(pjob->ji_qs.ji_queue), "%s", destination);
 
   pjob->ji_wattr[JOB_ATR_qrank].at_val.at_long = ++queue_rank;
     
@@ -368,8 +389,10 @@ static int local_move(
   if (parent_queue_mutex_held == TRUE)
     {
     /* re-lock the routing queue */
-    if ((routing_que = lock_queue_with_job_held(routing_que, &pjob)) == NULL)
+    if ((tmp_que = lock_queue_with_job_held(routing_que, &pjob)) == NULL)
       lock_queue(routing_que, __func__, NULL, 0);
+    else
+      routing_que = tmp_que;
     }
 
   if (*my_err != PBSE_NONE)
@@ -579,14 +602,17 @@ void finish_move_process(
     switch (type)
       {
       case MOVE_TYPE_Move:
+
         finish_moving_processing(pjob, preq, status);
         break;
         
       case MOVE_TYPE_Route:
+
         finish_routing_processing(pjob, status);
         break;
         
       case MOVE_TYPE_Exec:
+
         unlock_ji_mutex(pjob, __func__, "1", LOGLEVEL);
         pjob = NULL;
         finish_sendmom(job_id, preq, time, node_name, status, mom_err);
@@ -594,10 +620,9 @@ void finish_move_process(
         break;
       } /* END switch (type) */
     }
+
   if (pjob != NULL)
     unlock_ji_mutex(pjob, __func__, "2", LOGLEVEL);
-
-
   } /* END finish_move_process() */
 
 
@@ -641,8 +666,7 @@ int send_job_work(
   int                   local_errno = 0;
   tlist_head            attrl;
   enum conn_type        cntype = ToServerDIS;
-  int                   con = -1;
-  int                   sock = -1;
+  int                   con = PBS_NET_RC_UNSET;
   int                   encode_type;
   int                   mom_err = PBSE_NONE;
   int                   i;
@@ -671,7 +695,11 @@ int send_job_work(
   unsigned short        job_momport = -1;
 
   if ((pjob = svr_find_job(job_id, TRUE)) == NULL)
+    {
+    *my_err = PBSE_JOBNOTFOUND;
+    req_reject(-1, 0, preq, NULL, NULL);
     return(PBSE_JOBNOTFOUND);
+    }
 
   if (strlen(pjob->ji_qs.ji_destin) != 0)
     strcpy(job_destin, pjob->ji_qs.ji_destin);
@@ -748,10 +776,18 @@ int send_job_work(
   attrl_fixlink(&attrl);
 
   /* put together the job script file name */
-  if (pjob->ji_wattr[JOB_ATR_job_array_request].at_flags & ATR_VFLAG_SET)
+  if (pjob->ji_arraystructid[0] != '\0')
     {
-    snprintf(script_name, sizeof(script_name), "%s%s%s",
-      path_jobs, pjob->ji_arraystruct->ai_qs.fileprefix, JOB_SCRIPT_SUFFIX);
+    job_array *pa = get_jobs_array(&pjob);
+
+    if (pa != NULL)
+      {
+      snprintf(script_name, sizeof(script_name), "%s%s%s",
+        path_jobs, pa->ai_qs.fileprefix, JOB_SCRIPT_SUFFIX);
+      unlock_ai_mutex(pa, __func__, NULL, LOGLEVEL);
+      }
+    else if (pjob == NULL)
+      return(PBSE_JOB_RECYCLED);
     }
   else
     {
@@ -792,8 +828,7 @@ int send_job_work(
       if (con >= 0)
         {
         svr_disconnect(con);
-
-        close_conn(sock, FALSE);
+        con = PBS_NET_RC_UNSET;
         }
 
       /* check my_err from previous attempt */
@@ -826,8 +861,13 @@ int send_job_work(
       continue;
       }
 
+    if (con == PBS_LOCAL_CONNECTION)
+      {
+      log_err(-1, __func__, "attempting to run the job on pbs_server???");
+      return(PBSE_SYSTEM);
+      }
+
     pthread_mutex_lock(connection[con].ch_mutex);
-    sock = connection[con].ch_socket;
     pthread_mutex_unlock(connection[con].ch_mutex);
 
     if (attempt_to_queue_job == TRUE)
@@ -990,8 +1030,7 @@ int send_job_work(
       }
 
     svr_disconnect(con);
-
-    close_conn(sock, FALSE);
+    con = PBS_NET_RC_UNSET;
 
     /* SUCCESS */
     rc = PBSE_NONE;  /* Equivalent value to LOCUTION_SUCCESS */
@@ -1001,8 +1040,6 @@ int send_job_work(
   if (con >= 0)
     {
     svr_disconnect(con);
-
-    close_conn(sock, FALSE);
     }
 
   if (Timeout == TRUE)
@@ -1089,6 +1126,7 @@ void *send_job(
     send_job_work(job_id,node_name,type,&local_errno,preq);
     }
 
+  free(vp);
   return(NULL);
   }  /* END send_job() */
 
@@ -1180,7 +1218,7 @@ int net_move(
  *  -1 if destination should not be retried
  */
 
-static int should_retry_route(
+int should_retry_route(
 
   int err)
 

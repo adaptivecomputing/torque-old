@@ -41,6 +41,7 @@
 #include <sys/time.h>
 #include <sys/resource.h>
 #include <sys/utsname.h>
+#include <dirent.h>
 
 
 #include "libpbs.h"
@@ -81,6 +82,7 @@
 #include "mom_server.h"
 #include "mom_job_func.h" /* mom_job_purge */
 #include "net_cache.h"
+#include "mom_job_cleanup.h"
 
 #include "mcom.h"
 #include "mom_server_lib.h" /* shutdown_to_server */
@@ -94,6 +96,8 @@
 #endif /* _POSIX_MEMLOCK */
 
 #define MAX_UPDATES_BEFORE_SENDING  20
+#define PMOMTCPTIMEOUT 60  /* duration in seconds mom TCP requests will block */
+
 /* Global Data Items */
 
 char  *program_name;
@@ -199,6 +203,7 @@ char           *TRemChkptDirList[TMAX_RCDCOUNT];
 
 job            *JobsToResend[MAX_RESEND_JOBS];
 
+resizable_array  *exiting_job_list;
 resizable_array  *things_to_resend;
 char             *AllocParCmd = NULL;  /* (alloc) */
 
@@ -225,12 +230,12 @@ int      is_login_node   = FALSE;
 
 extern char *server_alias;
 extern unsigned int pe_alarm_time;
-extern time_t   pbs_tcp_timeout;
 extern long     MaxConnectTimeout;
 
 extern resizable_array *received_statuses;
 extern hash_table_t    *received_table;
 
+time_t          pbs_tcp_timeout = PMOMTCPTIMEOUT;
 char            tmpdir_basename[MAXPATHLEN];  /* for $TMPDIR */
 
 char            rcp_path[MAXPATHLEN];
@@ -294,7 +299,6 @@ static void mom_lock(int fds, int op);
 int setup_nodeboards();
 #endif /* NUMA_SUPPORT */
 
-#define PMOMTCPTIMEOUT 60  /* duration in seconds mom TCP requests will block */
 
 
 /* Local Data Items */
@@ -486,7 +490,7 @@ static char *opsys(struct rm_attribute *);
 static char *requname(struct rm_attribute *);
 static char *validuser(struct rm_attribute *);
 static char *reqmsg(struct rm_attribute *);
-char *reqgres(struct rm_attribute *);
+char        *reqgres(struct rm_attribute *);
 static char *reqstate(struct rm_attribute *);
 static char *getjoblist(struct rm_attribute *);
 static char *reqvarattr(struct rm_attribute *);
@@ -895,8 +899,7 @@ static char *getjoblist(
       int   new_list_len = listlen + BUFSIZ;
       char *tmpList;
 
-
-      tmpList = realloc(list,listlen);
+      tmpList = realloc(list, new_list_len);
 
       if (tmpList == NULL)
       	{
@@ -938,7 +941,8 @@ static char *reqvarattr(
   struct rm_attribute *attrib)  /* I */
 
   {
-  static char    *list = NULL, *child_spot;
+  static char    *list = NULL;
+  char           *child_spot;
   static int      listlen = 0;
 
   struct varattr *pva;
@@ -1030,24 +1034,23 @@ static char *reqvarattr(
         child_len  = 0;
         child_spot[0] = '\0';
 
-retryread:
-
-        while ((len = read(fd, child_spot, TMAX_VARBUF - child_len)) > 0)
+        while (child_len < TMAX_VARBUF)
           {
+          len = read(fd, child_spot, TMAX_VARBUF - child_len);
+
+          if ((len <= 0) &&
+              (errno != EINTR))
+            break;
+          else if (len < 0)
+            continue;
+
           child_len  += len;
           child_spot += len;
-
-          if (child_len >= TMAX_VARBUF - 1)
-            break;
-          }  /* END while ((len = read() > 0) */
+          }
 
         if (len == -1)
           {
           /* FAILURE - cannot read var script output */
-
-          if (errno == EINTR)
-            goto retryread;
-
           log_err(errno, __func__, "pipe read");
 
           sprintf(pva->va_value, "? %d",
@@ -1157,7 +1160,7 @@ char *reqgres(
     return(GResBuf);
     }
 
-  for (cp = config_array;cp->c_name != NULL;cp++)
+  for (cp = config_array; cp->c_name != NULL; cp++)
     {
     if (cp->c_u.c_value == NULL)
       continue;
@@ -1183,7 +1186,6 @@ char *reqgres(
       }
 
     /* verify parameter is not common */
-
     for (sindex = 0;sindex < RM_NPARM;sindex++)
       {
       if (common_config[sindex].c_name == NULL)
@@ -1207,7 +1209,9 @@ char *reqgres(
       continue;
 
     if (GResBuf[0] != '\0')
-      strncat(GResBuf, "+", 1024);
+      {
+      strncat(GResBuf, "+", sizeof(GResBuf) - 1 - strlen(GResBuf));
+      }
 
     snprintf(tmpLine, 1024, "%s:%s",
              cp->c_name,
@@ -1750,10 +1754,13 @@ static u_long settmpdir(
     return(0);
     }
 
-  strncpy(tmpdir_basename, Value, sizeof(tmpdir_basename));
+  snprintf(tmpdir_basename, sizeof(tmpdir_basename), "%s", Value);
 
   return(1);
   }
+
+
+
 
 static u_long setexecwithexec(
 
@@ -1773,6 +1780,8 @@ static u_long setexecwithexec(
   } /* END setexecwithexec() */
 
 
+
+
 static u_long setxauthpath(
 
   char *Value)
@@ -1787,11 +1796,10 @@ static u_long setxauthpath(
     return(0);
     }
 
-  strncpy(xauth_path, Value, sizeof(xauth_path));
+  snprintf(xauth_path, sizeof(xauth_path), "%s", Value);
 
   return(1);
   }
-
 
 
 
@@ -1814,7 +1822,7 @@ static u_long setrcpcmd(
     return(0);
     }
 
-  strncpy(rcp_path, Value, sizeof(rcp_path));
+  snprintf(rcp_path, sizeof(rcp_path), "%s", Value);
 
   strcpy(rcp_args, "");
 
@@ -1824,7 +1832,7 @@ static u_long setrcpcmd(
 
     if (*(ptr + 1) != '\0')
       {
-      strncpy(rcp_args, ptr + 1, sizeof(rcp_args));
+      snprintf(rcp_args, sizeof(rcp_args), "%s", ptr + 1);
       }
     }
 
@@ -1939,7 +1947,7 @@ static u_long configversion(
     return(0);
     }
 
-  strncpy(MOMConfigVersion, Value, sizeof(MOMConfigVersion));
+  snprintf(MOMConfigVersion, sizeof(MOMConfigVersion), "%s", Value);
 
   /* SUCCESS */
 
@@ -2274,7 +2282,7 @@ static unsigned long setumask(
     "setumask",
     value);
 
-  strncpy(DEFAULT_UMASK, value, sizeof(DEFAULT_UMASK));
+  snprintf(DEFAULT_UMASK, sizeof(DEFAULT_UMASK), "%s", value);
 
   return(1);
   }  /* END setumask() */
@@ -2293,7 +2301,7 @@ static unsigned long setpreexec(
     "setpreexec",
     value);
 
-  strncpy(PRE_EXEC, value, sizeof(PRE_EXEC));
+  snprintf(PRE_EXEC, sizeof(PRE_EXEC), "%s", value);
 
 #if SHELL_USE_ARGV == 0
   log_err(0, __func__, "pbs_mom not configured with enable-shell-user-argv option");
@@ -2732,7 +2740,7 @@ static unsigned long setnodecheckscript(
     return(0);
     }
 
-  strncpy(PBSNodeCheckPath, value, sizeof(PBSNodeCheckPath));
+  snprintf(PBSNodeCheckPath, sizeof(PBSNodeCheckPath), "%s", value);
 
   strcat(newstr, value);
 
@@ -3070,7 +3078,7 @@ static unsigned long setmomhost(
   {
   hostname_specified = 1;
 
-  strncpy(mom_host, value, PBS_MAXHOSTNAME);     /* remember name */
+  snprintf(mom_host, sizeof(mom_host), "%s", value);
 
   /* SUCCESS */
 
@@ -3340,12 +3348,14 @@ unsigned long jobstarter(char *value)  /* I */
     return(0);  /* error */
     }
 
-  strncpy(jobstarter_exe_name, value, sizeof(jobstarter_exe_name));
+  snprintf(jobstarter_exe_name, sizeof(jobstarter_exe_name), "%s", value);
 
   jobstarter_set = 1;
 
   return(1);
   }  /* END jobstarter() */
+
+
 
 
 static unsigned long setremchkptdirlist(
@@ -3605,12 +3615,17 @@ int read_config(
     nconfig = 0;
     linenum = 0;
 
-    while (fgets(line, sizeof(line), conf))
+    memset(line, 0, sizeof(line));
+
+    while (fgets(line, sizeof(line) - 1, conf))
       {
       linenum++;
 
       if (line[0] == '#') /* comment */
+        {
+        memset(line, 0, sizeof(line));
         continue;
+        }
 
       if ((ptr = strchr(line, '#')) != NULL)
         {
@@ -3622,7 +3637,10 @@ int read_config(
       str = skipwhite(line); /* pass over initial whitespace */
 
       if (*str == '\0')
+        {
+        memset(line, 0, sizeof(line));
         continue;
+        }
 
       if (LOGLEVEL >= 6)
         {
@@ -3652,6 +3670,8 @@ int read_config(
                   name);
 
           log_err(-1, __func__, log_buffer);
+    
+          memset(line, 0, sizeof(line));
 
           continue;
           }
@@ -3670,6 +3690,8 @@ int read_config(
 
           log_err(-1, __func__, log_buffer);
           }
+    
+        memset(line, 0, sizeof(line));
 
         continue;
         }
@@ -3677,6 +3699,8 @@ int read_config(
       add_static(str, file, linenum);
 
       nconfig++;
+    
+      memset(line, 0, sizeof(line));
       }  /* END while (fgets()) */
 
     /*
@@ -3811,7 +3835,7 @@ static u_long setmempressdur(
 
 struct rm_attribute *momgetattr(
 
-        char *str) /* I */
+  char *str) /* I */
 
   {
   static char  cookie[] = "tag:"; /* rm_attribute to ignore */
@@ -3828,6 +3852,9 @@ struct rm_attribute *momgetattr(
 
   if (str == NULL) /* if NULL is passed, use prev value */
     str = hold;
+
+  if (str == NULL)
+    return(NULL);
 
   /* FORMAT: ??? */
 
@@ -3956,7 +3983,7 @@ char *conf_res(
   ** is the first step.
   */
 
-  for (i = 0;i < RM_NPARM;i++)
+  for (i = 0; i < RM_NPARM - 1; i++)
     {
     /* remember params */
 
@@ -3990,7 +4017,7 @@ char *conf_res(
     goto done;
     }
 
-  name[i] = NULL;
+  name[i] = '\0';
 
   for (d = ret_string, resline++;*resline;)
     {
@@ -4396,6 +4423,78 @@ static void mom_lock(
   }  /* END mom_lock() */
 
 
+
+
+int could_be_mic_or_gpu_file(
+
+  const char *jobid)
+
+  {
+  int         len = strlen(jobid);
+  const char *start = jobid + len - 3;
+
+  if (*start == 'g')
+    {
+    if ((start[1] == 'p') &&
+        (start[2] == 'u'))
+      return(TRUE);
+    }
+  else if (*start == 'm')
+    {
+    if ((start[1] == 'i') &&
+        (start[2] == 'c'))
+      return(TRUE);
+    }
+
+  return(FALSE);
+  } /* END could_be_mic_or_gpu_file() */
+
+
+
+
+void cleanup_aux()
+
+  {
+  struct dirent *pdirent;
+  DIR           *auxdir;
+  char           namebuf[MAXLINE];
+  unsigned int   len;
+
+  auxdir = opendir(path_aux);
+
+  if (auxdir != NULL)
+    {
+    while ((pdirent = readdir(auxdir)) != NULL)
+      {
+      if (pdirent->d_name[0] == '.')
+        continue;
+        
+      if (could_be_mic_or_gpu_file(pdirent->d_name) == TRUE)
+        continue;
+     
+      if (mom_find_job(pdirent->d_name) == NULL)
+        {
+        /* this job doesn't exist */
+        snprintf(namebuf, sizeof(namebuf), "%s/%s", path_aux, pdirent->d_name);
+        unlink(namebuf);
+
+        len = strlen(namebuf);
+        if (sizeof(namebuf) - 3 > len)
+          {
+          strcpy(namebuf + len, "gpu");
+          unlink(namebuf);
+          strcpy(namebuf + len, "mic");
+          unlink(namebuf);
+          }
+        }
+      }
+    closedir(auxdir);
+    }
+  } /* END cleanup_aux() */
+
+
+
+
 /*
 ** Process a request for the resource monitor.  The i/o
 ** will take place using DIS over a tcp fd or an rpp stream.
@@ -4510,6 +4609,12 @@ int rm_request(
 
         if (ret == DIS_EOD)
           {
+          if (cp != NULL)
+            {
+            free(cp);
+            cp = NULL;
+            }
+
           break;
           }
 
@@ -5024,10 +5129,19 @@ int rm_request(
               char          *VPtr;  /* job env variable value pointer */
               char          *SPtr;
               int            SSpace;
+              int            vnindex;
 
               for (;pjob != NULL;pjob = (job *)GET_NEXT(pjob->ji_alljobs))
                 {
-                numvnodes += pjob->ji_numvnod;
+
+                /* count the CPUs assigned to this mom */
+                for (vnindex = 0; vnindex < pjob->ji_numvnod; vnindex++)
+                  {
+                  if (!strcmp(pjob->ji_vnods[vnindex].vn_host->hn_host, mom_alias))
+                    {
+                    numvnodes++;
+                    }
+                  }
 
                 /* JobId, job state */
                 sprintf(tmpLine, "job[%s]  state=%s",
@@ -5039,13 +5153,19 @@ int rm_request(
                 if (verbositylevel >= 2)
                   {
                   if (pjob->ji_wattr[JOB_ATR_resc_used].at_type != ATR_TYPE_RESC)
-                    return DIS_INVALID;
+                    {
+                    free(cp);
+                    return(DIS_INVALID);
+                    }
 
                   pres = (resource *)GET_NEXT(pjob->ji_wattr[JOB_ATR_resc_used].at_val.at_list);
                   for (;pres != NULL;pres = (resource *)GET_NEXT(pres->rs_link))
                     {
                     if (pres->rs_defin == NULL) 
-                      return DIS_INVALID;
+                      {
+                      free(cp);
+                      return(DIS_INVALID);
+                      }
 
                     resname = pres->rs_defin->rs_name;
                     if (!(strcmp(resname, "mem")))
@@ -5434,7 +5554,7 @@ bad:
 
   free(tmp);
 
-  strcat(log_buffer, output);
+  snprintf(log_buffer + strlen(log_buffer), sizeof(log_buffer) - strlen(log_buffer), "%s", output);
 
   log_err(errno, __func__, log_buffer);
 
@@ -5444,16 +5564,16 @@ bad:
 
 
 int tcp_read_proto_version(
-    struct tcp_chan *chan,
-    int *proto,
-    int *version)
+
+  struct tcp_chan *chan,
+  int             *proto,
+  int             *version)
+
   {
   int rc = DIS_SUCCESS;
   time_t tmpT;
 
   tmpT = pbs_tcp_timeout;
-
-  pbs_tcp_timeout = 0;
 
   *proto = disrsi(chan, &rc);
 
@@ -5513,7 +5633,7 @@ int do_tcp(
     {
     sprintf(log_buffer, "Can not allocate memory for socket buffer");
     log_err(errno, __func__, log_buffer);
-    return PBSE_MEM_MALLOC;
+    return(PBSE_MEM_MALLOC);
     }
 
   if ((rc = tcp_read_proto_version(chan, &proto, &version)) != DIS_SUCCESS)
@@ -5533,8 +5653,6 @@ int do_tcp(
       DBPRT(("%s: got a resource monitor request\n", __func__))
 
       tmpT = pbs_tcp_timeout;
-
-      pbs_tcp_timeout = 0;
 
       rc = rm_request(chan, version);
 
@@ -5564,7 +5682,7 @@ int do_tcp(
       while ((rc == PBSE_NONE) &&
              (tcp_chan_has_data(chan) == TRUE))
         {
-        if ((rc = tcp_read_proto_version(chan,&proto,&version)) == DIS_SUCCESS)
+        if ((rc = tcp_read_proto_version(chan, &proto, &version)) == DIS_SUCCESS)
           rc = tm_request(chan, version);
         }
 
@@ -6138,7 +6256,6 @@ void usage(
 
 
 
-
 /*
  * MOMFindMyExe - attempt to find my running executable file.
  *                returns alloc'd memory that is never freed.
@@ -6149,6 +6266,7 @@ static char *orig_path;
 char *MOMFindMyExe(
 
   char *argv0)  /* I */
+
   {
   char *link;
   int  has_slash = 0;
@@ -6224,6 +6342,8 @@ char *MOMFindMyExe(
       return(link);
       }
 
+    free(link);
+
     return(NULL);
     }
 
@@ -6268,7 +6388,7 @@ char *MOMFindMyExe(
         }
       else
         {
-        strncpy(link, p, p_len);
+        snprintf(link, MAXPATHLEN + 1, "%s", p);
         *(link + p_len) = '\0';
         strcat(link, "/");
         strcat(link, argv0);
@@ -6281,9 +6401,10 @@ char *MOMFindMyExe(
       }  /* END for (p = path; *p; p = p_next) */
     }
 
+  free(link);
+
   return(NULL);
   }  /* END MOMFindMyExe() */
-
 
 
 
@@ -6327,6 +6448,7 @@ time_t MOMGetFileMtime(
  */
 
 void MOMCheckRestart(void)
+
   {
   time_t newmtime;
 
@@ -6337,7 +6459,8 @@ void MOMCheckRestart(void)
 
   newmtime = MOMGetFileMtime(MOMExePath);
 
-  if ((newmtime > 0) && (newmtime != MOMExeTime))
+  if ((newmtime > 0) && 
+      (newmtime != MOMExeTime))
     {
     if (mom_run_state == MOM_RUN_STATE_RUNNING)
       mom_run_state = MOM_RUN_STATE_RESTART;
@@ -6351,15 +6474,14 @@ void MOMCheckRestart(void)
 
     if (LOGLEVEL > 6)
       {
-      log_record(
-        PBSEVENT_SYSTEM,
-        PBS_EVENTCLASS_SERVER,
-        msg_daemonname,
-        log_buffer);
+      log_record(PBSEVENT_SYSTEM, PBS_EVENTCLASS_SERVER, msg_daemonname, log_buffer);
       }
 
     DBPRT(("%s\n", log_buffer));
     }
+
+  /* make sure we're not making a mess in the aux dir */
+  cleanup_aux();
   }  /* END MOMCheckRestart() */
 
 
@@ -6629,8 +6751,8 @@ void parse_command_line(
           }
         else if (!strcmp(optarg, "version"))
           {
-          printf("version: %s\n",
-                 PACKAGE_VERSION);
+          printf("Version: %s\nRevision: %s\n",
+            PACKAGE_VERSION, SVN_VERSION);
 
           exit(0);
           }
@@ -6665,7 +6787,7 @@ void parse_command_line(
 
         /* mom's alias name - used for multi-mom */
 
-        strncpy(mom_alias, optarg, PBS_MAXHOSTNAME); /* remember name */
+        snprintf(mom_alias, sizeof(mom_alias), "%s", optarg);
 
         break;
 
@@ -6689,7 +6811,7 @@ void parse_command_line(
 
         hostname_specified = 1;
 
-        strncpy(mom_host, optarg, PBS_MAXHOSTNAME); /* remember name */
+        snprintf(mom_host, sizeof(mom_host), "%s", optarg);
 
         break;
 
@@ -7525,6 +7647,8 @@ int setup_program_environment(void)
   
   things_to_resend = initialize_resizable_array(10);
 
+  exiting_job_list = initialize_resizable_array(10);
+
   /* recover & abort jobs which were under MOM's control */
   log_record(
     PBSEVENT_DEBUG,
@@ -7896,8 +8020,7 @@ void examine_all_polled_jobs(void)
  * examine_all_running_jobs
  */
 
-void
-examine_all_running_jobs(void)
+void examine_all_running_jobs(void)
 
   {
   job         *pjob;
@@ -7934,7 +8057,7 @@ examine_all_running_jobs(void)
         {
 #ifdef _CRAY
 
-        if (pjob->ji_globid == NULL)
+        if (pjob->ji_globid[0] == '\0')
           break;
 
         c = atoi(pjob->ji_globid);
@@ -8027,13 +8150,46 @@ void examine_all_jobs_to_resend(void)
 
 
 
+void check_exiting_jobs()
+
+  {
+  exiting_job_info *eji;
+  job              *pjob;
+  time_t            time_now = time(NULL);
+
+  while ((eji = (exiting_job_info *)pop_thing(exiting_job_list)) != NULL)
+    {
+    if (time_now - eji->obit_sent < 300)
+      {
+      /* insert this back at the front */
+      insert_thing_after(exiting_job_list, eji, ALWAYS_EMPTY_INDEX);
+      break;
+      }
+
+    pjob = mom_find_job(eji->jobid);
+
+    if (pjob == NULL)
+      {
+      free(eji);
+      }
+    else
+      {
+      post_epilogue(pjob, 0);
+      eji->obit_sent = time_now;
+      insert_thing(exiting_job_list, eji);
+      }
+    }
+
+  } /* END check_exiting_jobs() */
+
+
+
 
 /*
  * kill_all_running_jobs
  */
 
-void
-kill_all_running_jobs(void)
+void kill_all_running_jobs(void)
 
   {
   job *pjob;
@@ -8267,9 +8423,10 @@ void main_loop(void)
       recover = JOB_RECOV_RUNNING;
       }
 
-
     if (exiting_tasks)
       scan_for_exiting();
+
+    check_exiting_jobs();
 
     TMOMScanForStarting();
 
@@ -9006,6 +9163,7 @@ void resend_things()
   while ((mc = (resend_momcomm *)next_thing(things_to_resend, &iter)) != NULL)
     {
     ret = -1;
+    mc->resend_attempts += 1;
 
     switch (mc->mc_type)
       {
@@ -9034,6 +9192,8 @@ void resend_things()
 
         ret = resend_obit_task_reply((obit_task_info *)mc->mc_struct);
 
+        break;
+
       default:
 
         snprintf(log_buffer, sizeof(log_buffer), 
@@ -9047,7 +9207,8 @@ void resend_things()
         break;
       }
 
-    if (ret == DIS_SUCCESS)
+    if ((ret == DIS_SUCCESS) ||
+        (mc->resend_attempts > 3))
       {
       remove_thing(things_to_resend, mc);
       free(mc);

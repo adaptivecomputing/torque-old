@@ -175,7 +175,7 @@ typedef enum
   #undef _POSIX_MEMLOCK
 #endif /* NOPOSIXMEMLOCK */
 
-#define EXTRA_VARIABLE_SPACE 2000
+#define EXTRA_VARIABLE_SPACE 5120
 #define EXTRA_ENV_PTRS        32
 
 #define MAX_JOB_ARGS          64
@@ -264,6 +264,7 @@ enum TVarElseEnum
   tveGpuFile,
   tveNprocs,
   tveWallTime,
+  tveMicFile,
   tveLAST
   };
 
@@ -289,6 +290,7 @@ static char *variables_else[] =   /* variables to add, value computed */
   "PBS_GPUFILE",    /* file containing which GPUs to access */
   "PBS_NP",         /* number of processors requested */
   "PBS_WALLTIME",   /* requested or default walltime */
+  "PBS_MICFILE",    /* file containing which MICs to access */
   NULL
   };
 
@@ -312,7 +314,6 @@ int TMomCheckJobChild(pjobexec_t *, int, int *, int *);
 
 int InitUserEnv(job *,task *,char **,struct passwd *pwdp,char *);
 int mkdirtree(char *,mode_t);
-int TTmpDirName(job*, char *);
 
 struct radix_buf **allocate_sister_list(int radix);
 int add_host_to_sister_list(char *, unsigned short , struct radix_buf *);
@@ -813,6 +814,12 @@ static int open_pty(
     {
     FDMOVE(pts);
 
+    if(pts < 0)
+      {
+      log_err(errno, "open_pty", "cannot move pts file.");
+      return -1;
+      }
+
     fchmod(pts, 0620);
 
     if (fchown(pts, pjob->ji_qs.ji_un.ji_momt.ji_exuid,
@@ -917,7 +924,7 @@ static int open_std_out_err(
                   filemode,
                   pjob->ji_qs.ji_un.ji_momt.ji_exgid);
 
-    file_err = dup(file_out);
+    file_err = (file_out < 0)?-1:dup(file_out);
     }
   else if (i == -1)
     {
@@ -926,7 +933,7 @@ static int open_std_out_err(
                   filemode,
                   pjob->ji_qs.ji_un.ji_momt.ji_exgid);
 
-    file_out = dup(file_err);
+    file_out = (file_err < 0)?-1:dup(file_err);
     }
 
   if (file_out == -2)
@@ -975,26 +982,30 @@ static int open_std_out_err(
 
   FDMOVE(file_err);  /* so don't clobber stdin/out/err */
 
+  if((file_out == -1)||(file_err == -1))
+    {
+    log_err(errno, __func__, "unable to open standard output/error");
+    return -1;
+    }
+
   if (file_out != 1)
     {
     close(1);
 
-    if (dup(file_out) == -1)
+    if (dup(file_out) >= 0)
       {
+      close(file_out);
       }
-
-    close(file_out);
     }
 
   if (file_err != 2)
     {
     close(2);
 
-    if (dup(file_err) == -1)
+    if (dup(file_err) >= 0)
      {
+     close(file_err);
      }
-
-    close(file_err);
     }
 
   return(PBSE_NONE);
@@ -1089,12 +1100,13 @@ int mkdirtree(
 int TTmpDirName(
     
   job  *pjob,   /* I */
-  char *tmpdir) /* O */
+  char *tmpdir, /* O */
+  int   tmpdir_size)
 
   {
   if (tmpdir_basename[0] == '/')
     {
-    snprintf(tmpdir, MAXPATHLEN,
+    snprintf(tmpdir, tmpdir_size,
       "%s/%s",
       tmpdir_basename,
       pjob->ji_qs.ji_jobid);
@@ -1427,6 +1439,10 @@ int InitUserEnv(
     sprintf(buf, "%s/%sgpu", path_aux, pjob->ji_qs.ji_jobid);
 
     bld_env_variables(&vtable, variables_else[tveGpuFile], buf);
+
+    sprintf(buf, "%s/%smic", path_aux, pjob->ji_qs.ji_jobid);
+
+    bld_env_variables(&vtable, variables_else[tveMicFile], buf);
     }
 
   /* PBS_WALLTIME */
@@ -1507,8 +1523,9 @@ int InitUserEnv(
 
   /* setup TMPDIR */
 
-  if (!usertmpdir && TTmpDirName(pjob, buf))
-      bld_env_variables(&vtable, variables_else[tveTmpDir], buf);
+  if ((!usertmpdir) && 
+      (TTmpDirName(pjob, buf, sizeof(buf))))
+    bld_env_variables(&vtable, variables_else[tveTmpDir], buf);
 
   /* PBS_VERSION */
 
@@ -1788,12 +1805,14 @@ struct radix_buf **allocate_sister_list(
     {
     if ((sister_list[i] = calloc(1, sizeof(struct radix_buf))) == NULL)
       {
+      free(sister_list);
       log_err(ENOMEM,__func__,"");
       return(NULL);
       }
 
     if ((sister_list[i]->host_list = calloc(1, THE_LIST_SIZE)) == NULL)
       {
+      free(sister_list);
       log_err(ENOMEM,__func__,"");
       return(NULL);
       }
@@ -2503,24 +2522,28 @@ int use_cpusets(
 
 
 /*
- * writes the exec_gpu str to a file
+ * writes an exec attr to a file
  * receives strings in the format: <hostname>-gpu/<index>[+<hostname>-gpu/<index>...]
  * and prints them in the format: <hostname>-gpu<index>[\n<hostname>-gpu<index>...]
+ * Currently this is only supported for JOB_ATR_exec_gpus and JOB_ATR_exec_mics
  *
  * @param file - the file to print to
  * @param pjob - the job whose gpu string will be printed
  * @return PBSE_NONE if success, error code otherwise
  */
-int write_gpus_to_file(
 
-  job  *pjob) /* I */
+int write_attr_to_file(
+
+  job  *pjob,
+  int   index,
+  char *suffix)
 
   {
-  char         filename[MAXPATHLEN];
+  char  filename[MAXPATHLEN];
   FILE *file;
 
-  char *gpu_str;
-  char *gpu_worker;
+  char *attr_str;
+  char *worker;
 
   char *plus;
   char *slash;
@@ -2528,18 +2551,19 @@ int write_gpus_to_file(
   char *curr;
 
   /* if there are no gpus, do nothing */
-  if ((pjob->ji_wattr[JOB_ATR_exec_gpus].at_flags & ATR_VFLAG_SET) == 0)
+  if ((pjob->ji_wattr[index].at_flags & ATR_VFLAG_SET) == 0)
     return(PBSE_NONE);
 
-  gpu_str = pjob->ji_wattr[JOB_ATR_exec_gpus].at_val.at_str;
+  attr_str = pjob->ji_wattr[index].at_val.at_str;
 
-  if (gpu_str == NULL)
+  if (attr_str == NULL)
     return(PBSE_NONE);
 
   /* open the file just like $PBS_NODEFILE */
-  sprintf(filename, "%s/%sgpu",
+  sprintf(filename, "%s/%s%s",
     path_aux,
-    pjob->ji_qs.ji_jobid);
+    pjob->ji_qs.ji_jobid,
+    suffix);
 
   if ((file = fopen(filename, "w")) == NULL)
     {
@@ -2561,7 +2585,7 @@ int write_gpus_to_file(
     return(-1);
     }
 
-  if ((gpu_worker = strdup(gpu_str)) == NULL)
+  if ((worker = strdup(attr_str)) == NULL)
     {
     fclose(file);
 
@@ -2569,7 +2593,7 @@ int write_gpus_to_file(
     return(ENOMEM);
     }
 
-  curr = gpu_worker;
+  curr = worker;
 
   while (curr != NULL)
     {
@@ -2606,12 +2630,12 @@ int write_gpus_to_file(
     }
 
   /* SUCCESS */
-  free(gpu_worker);
+  free(worker);
 
   fclose(file);
 
   return(PBSE_NONE);
-  } /* END write_gpus_to_file() */
+  } /* END write_attr_to_file() */
 
 
 
@@ -2676,8 +2700,7 @@ int write_nodes_to_file(
     char *ptr;
 
     /* FORMAT:  <HOST>[:<HOST>]... */
-
-    strncpy(tmpBuffer, BPtr, sizeof(tmpBuffer));
+    snprintf(tmpBuffer, sizeof(tmpBuffer), "%s", BPtr);
 
     ptr = strtok(tmpBuffer, ":");
 
@@ -2771,12 +2794,14 @@ void take_care_of_nodes_file(
     if (write_nodes_to_file(pjob) == -1)
       starter_return(TJE->upfds, TJE->downfds, JOB_EXEC_FAIL1, sjr);
 
-    if (write_gpus_to_file(pjob) == -1)
+    if (write_attr_to_file(pjob, JOB_ATR_exec_gpus, "gpu") == -1)
+      starter_return(TJE->upfds, TJE->downfds, JOB_EXEC_FAIL1, sjr);
+
+    if (write_attr_to_file(pjob, JOB_ATR_exec_mics, "mic") == -1)
       starter_return(TJE->upfds, TJE->downfds, JOB_EXEC_FAIL1, sjr);
 
 #ifdef NVIDIA_GPUS
-    if ((use_nvidia_gpu) && 
-        setup_gpus_for_job(pjob) == -1)
+    if ((use_nvidia_gpu) && setup_gpus_for_job(pjob) == -1)
       starter_return(TJE->upfds, TJE->downfds, JOB_EXEC_FAIL1, sjr);
 #endif  /* NVIDIA_GPUS */
     }   /* END if (pjob->ji_flags & MOM_HAS_NODEFILE) */
@@ -2830,6 +2855,8 @@ void handle_reservation(
   long long  pagg = 0;
   int        j;
   char      *rsv_id = NULL;
+  resource  *pres;
+  int        use_nppn = TRUE;
   
   sjr->sj_session = setsid();
 
@@ -2852,12 +2879,28 @@ void handle_reservation(
     
   if (is_login_node == TRUE)
     {
-    j = create_alps_reservation(pjob->ji_wattr[JOB_ATR_exec_host].at_val.at_str,
+    char *exec_str;
+
+    if (pjob->ji_wattr[JOB_ATR_multi_req_alps].at_val.at_str != NULL)
+      exec_str = pjob->ji_wattr[JOB_ATR_multi_req_alps].at_val.at_str;
+    else
+      exec_str = pjob->ji_wattr[JOB_ATR_exec_host].at_val.at_str;
+
+    pres = find_resc_entry(
+             &pjob->ji_wattr[JOB_ATR_resource],
+             find_resc_def(svr_resc_def, "procs", svr_resc_size));
+
+    if ((pres != NULL) &&
+        (pres->rs_value.at_val.at_long != 0))
+      use_nppn = FALSE;
+
+    j = create_alps_reservation(exec_str,
           pjob->ji_wattr[JOB_ATR_job_owner].at_val.at_str,
           pjob->ji_qs.ji_jobid,
           apbasil_path,
           apbasil_protocol,
           pagg,
+          use_nppn,
           &rsv_id);
     
     if (rsv_id != NULL)
@@ -2978,13 +3021,14 @@ int start_interactive_session(
   struct startjob_rtn *sjr,
   pjobexec_t          *TJE,
   int                 *pts_ptr,
-  int                 *qsub_sock_ptr)
+  int                 *qsub_sock_ptr,
+  char                *qsubhostname,
+  int                  qsubhostname_size)
 
   {
   struct sigaction  act;
   int               pport = 0;
   char             *phost;
-  char              qsubhostname[MAXLINE];
   char             *termtype;
   char              EMsg[MAXLINE];
 
@@ -2994,7 +3038,6 @@ int start_interactive_session(
   /*************************************************************/
   
   sigemptyset(&act.sa_mask);
-
 #ifdef SA_INTERRUPT
   act.sa_flags   = SA_INTERRUPT;
 #else
@@ -3035,13 +3078,13 @@ int start_interactive_session(
   
   if (submithost_suffix != NULL)
     {
-    snprintf(qsubhostname, sizeof(qsubhostname), "%s%s",
+    snprintf(qsubhostname, qsubhostname_size, "%s%s",
       phost,
       submithost_suffix);
     }
   else
     {
-    snprintf(qsubhostname, sizeof(qsubhostname), "%s", phost);
+    snprintf(qsubhostname, qsubhostname_size, "%s", phost);
     }
 
   if ((*qsub_sock_ptr = conn_qsub(qsubhostname, pport, EMsg)) < 0)
@@ -3060,7 +3103,8 @@ int start_interactive_session(
   FDMOVE(*qsub_sock_ptr);
   
   /* send jobid as validation to qsub */
-  if (write(*qsub_sock_ptr, pjob->ji_qs.ji_jobid, PBS_MAXSVRJOBID + 1) != PBS_MAXSVRJOBID + 1)
+  if ((*qsub_sock_ptr < 0)||
+      (write(*qsub_sock_ptr, pjob->ji_qs.ji_jobid, PBS_MAXSVRJOBID + 1) != PBS_MAXSVRJOBID + 1))
     {
     log_err(errno, __func__, "cannot write jobid");
     
@@ -3092,7 +3136,8 @@ int start_interactive_session(
   act.sa_flags   = 0;
   
   sigaction(SIGALRM, &act, NULL);
-  
+
+
   /* open the slave pty as the controlling tty */
   if ((*pts_ptr = open_pty(pjob)) < 0)
     {
@@ -3143,7 +3188,9 @@ void setup_interactive_job(
   struct startjob_rtn *sjr,
   pjobexec_t          *TJE,
   int                 *pts_ptr,
-  int                 *qsub_sock_ptr)
+  int                 *qsub_sock_ptr,
+  char                *qsubhostname,
+  int                  qsubhostname_size)
 
   {
   struct sigaction       act;
@@ -3152,8 +3199,10 @@ void setup_interactive_job(
 
   handle_reservation(pjob, sjr, TJE);
   
-  start_interactive_session(pjob, sjr, TJE, pts_ptr, qsub_sock_ptr);
-  
+  start_interactive_session(pjob, sjr, TJE, pts_ptr, qsub_sock_ptr, qsubhostname, qsubhostname_size);
+
+  memset(&act, 0, sizeof(act));
+  sigemptyset(&act.sa_mask);
   act.sa_handler = SIG_IGN;  /* setup to ignore SIGTERM */
   
   writerpid = fork();
@@ -3325,15 +3374,14 @@ void set_job_script_as_stdin(
   
   FDMOVE(script_in); /* make sure descriptor > 2 */
   
-  if (script_in != 0)
+  if (script_in > 0)
     {
     close(0);
     
-    if (dup(script_in) == -1)
+    if(dup(script_in) > 0)
       {
+      close(script_in);
       }
-    
-    close(script_in);
     }
   } /* END set_job_script_as_stdin() */
 
@@ -3823,6 +3871,15 @@ int TMomFinalizeChild(
 
   pwdp  = (struct passwd *)TJE->pwdp;
 
+  if (pwdp == NULL)
+    {
+    log_err(PBSE_BADUSER, __func__, "Running job with no password entry?");
+
+    starter_return(TJE->upfds, TJE->downfds, JOB_EXEC_RETRY, &sjr);
+
+    exit(-254);
+    }
+
   /*******************************************/
   /*                                         */
   /* The child process - will become the job */
@@ -3866,13 +3923,13 @@ int TMomFinalizeChild(
     log_ext(-1, __func__, "env initialized", LOG_DEBUG);
 
   /* Create the job's nodefile */
-  take_care_of_nodes_file(pjob, &sjr, TJE);
-
-  /* Set PBS_VNODENUM */
   vnodenum = pjob->ji_numvnod;
+
+  take_care_of_nodes_file(pjob, &sjr, TJE);
 
   sprintf(buf, "%d", 0);
 
+  /* Set PBS_VNODENUM */
   bld_env_variables(&vtable, "PBS_VNODENUM", buf);
 
   /* PBS_NP */
@@ -3919,7 +3976,7 @@ int TMomFinalizeChild(
 
   if (TJE->is_interactive == TRUE)
     {
-    setup_interactive_job(pjob, &sjr, TJE, &pts, &qsub_sock);
+    setup_interactive_job(pjob, &sjr, TJE, &pts, &qsub_sock, qsubhostname, sizeof(qsubhostname));
     }     /* END if (TJE->is_interactive == TRUE) */
   else
     {
@@ -4100,7 +4157,7 @@ int TMomFinalizeChild(
         strcat(arg[aindex], path_jobs);
         }
       else
-        strcpy(argg[aindex], path_jobs);
+        strcpy(arg[aindex], path_jobs);
 
       strcat(arg[aindex], pjob->ji_qs.ji_fileprefix);
       strcat(arg[aindex], JOB_SCRIPT_SUFFIX);
@@ -4232,14 +4289,20 @@ int TMomFinalizeJob3(
   int        *SC)          /* O (return code) */
 
   {
-  struct startjob_rtn sjr;
+  struct startjob_rtn  sjr;
 
-  job  *pjob;
-  task *ptask;
-  unsigned int momport = 0;
+  job                 *pjob;
+  task                *ptask;
+  unsigned int         momport = 0;
 
   pjob = (job *)TJE->pjob;
   ptask = (task *)TJE->ptask;
+
+  if (pjob == NULL)
+    {
+    log_err(-1, __func__, "This function needs a valid job pointer");
+    return(FAILURE);
+    }
 
   /* sjr populated in TMomFinalizeJob2() */
 
@@ -4535,6 +4598,14 @@ int start_process(
     }
 
   parent_write = pipes[1];
+
+  if((kid_read < 0)||
+      (kid_write < 0))
+    {
+    log_err(-1, __func__, log_buffer);
+
+    return(-1);
+    }
 
   /*
   ** Get ipaddr to Mother Superior.
@@ -5376,6 +5447,11 @@ void job_nodes(
         }
       }
     }
+  else
+    {
+    log_err(-1, __func__, "Cannot parse the nodes for a job without exec hosts being set");
+    return;
+    }
 
   pjob->ji_hosts = (hnodent *)calloc(nodenum + 1, sizeof(hnodent));
   pjob->ji_vnods = (vnodent *)calloc(nodenum + 1, sizeof(vnodent));
@@ -5920,7 +5996,6 @@ int start_exec(
 #ifndef NUMA_SUPPORT
   int                 i;
   int                 j;
-  int                 index;
   int                 local_errno;
   int                 addr_len;
 
@@ -5968,7 +6043,7 @@ int start_exec(
 
   /* should we make a tmpdir? */
 
-  if (TTmpDirName(pjob, tmpdir))
+  if (TTmpDirName(pjob, tmpdir, sizeof(tmpdir)))
     {
     if ((ret = TMakeTmpDir(pjob, tmpdir)) != PBSE_NONE)
       {
@@ -5986,13 +6061,11 @@ int start_exec(
      return once job is started */
 
 #ifndef NUMA_SUPPORT
-  index = find_attr(job_attr_def, "job_radix", JOB_ATR_LAST);
-  
-  if ((pjob->ji_wattr[index].at_flags & ATR_VFLAG_SET) &&
-      (pjob->ji_wattr[index].at_val.at_long != 0))
+  if ((pjob->ji_wattr[JOB_ATR_job_radix].at_flags & ATR_VFLAG_SET) &&
+      (pjob->ji_wattr[JOB_ATR_job_radix].at_val.at_long != 0))
     {
     /* parallel job */
-    mom_radix = pjob->ji_wattr[index].at_val.at_long;
+    mom_radix = pjob->ji_wattr[JOB_ATR_job_radix].at_val.at_long;
     }
   
   pjob->ji_radix = mom_radix;
@@ -6451,31 +6524,31 @@ char *std_file_name(
 
   {
   static char  path[MAXPATHLEN + 1];
-  char  key;
-  int   len;
-  char *pd;
-  char *suffix;
-  char *jobpath = NULL;
+  char         key;
+  int          len;
+  char        *pd;
+  char        *suffix;
+  char        *jobpath = NULL;
 #ifdef QSUB_KEEP_NO_OVERRIDE
-  char *pt;
-  char endpath[MAXPATHLEN + 1];
+  char        *pt;
+  char         endpath[MAXPATHLEN + 1];
 #endif
 
 #if NO_SPOOL_OUTPUT == 0
-  int   havehomespool = 0;
+  int          havehomespool = 0;
 
   extern char *TNoSpoolDirList[];
 #else /* NO_SPOOL_OUTPUT */
 
-  struct stat myspooldir;
+  struct stat  myspooldir;
   static char  path_alt[MAXPATHLEN + 1];
-  int   rcstat;
+  int          rcstat;
 #endif /* NO_SPOOL_OUTPUT */
 
   if (LOGLEVEL >= 5)
     {
     sprintf(log_buffer, "getting %s file name",
-            (which == StdOut) ? "stdout" : "stderr");
+      (which == StdOut) ? "stdout" : "stderr");
 
     log_record(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, pjob->ji_qs.ji_jobid, log_buffer);
     }
@@ -6519,7 +6592,7 @@ char *std_file_name(
           {
           remove_leading_hostname(&jobpath);
 
-          if (expand_path(pjob,jobpath,sizeof(path),path) != SUCCESS)
+          if (expand_path(pjob, jobpath, sizeof(path), path) != SUCCESS)
             {
             return(NULL);
             }
@@ -6669,13 +6742,11 @@ char *std_file_name(
     if (spoolasfinalname == FALSE)
       {
       /* force all output to user's HOME */
-
-      strncpy(path, pjob->ji_grpcache->gc_homedir, sizeof(path));
+      snprintf(path, sizeof(path), "%s", pjob->ji_grpcache->gc_homedir);
 
       /* check for $HOME/.pbs_spool */
       /* if it's not a directory, just use $HOME us usual */
-
-      strncpy(path_alt, path, sizeof(path_alt));
+      snprintf(path_alt, sizeof(path_alt), "%s", path);
 
       strncat(path_alt, "/.pbs_spool/", sizeof(path_alt));
 
@@ -6689,7 +6760,7 @@ char *std_file_name(
       seteuid(pbsuser);
 
       if ((rcstat == 0) && (S_ISDIR(myspooldir.st_mode)))
-        strncpy(path, path_alt, sizeof(path));
+        snprintf(path, sizeof(path), "%s", path_alt);
       else
         strncat(path, "/", sizeof(path));
 
@@ -6736,7 +6807,7 @@ char *std_file_name(
               if (LOGLEVEL >= 10)
                 log_ext(-1, __func__, "inside !strcasecmp", LOG_DEBUG);
 
-              strncpy(path, wdir, sizeof(path));
+              snprintf(path, sizeof(path), "%s", wdir);
 
               break;
               }
@@ -6748,7 +6819,7 @@ char *std_file_name(
               if (LOGLEVEL >= 10)
                 log_ext(-1, __func__, "inside !strncmp", LOG_DEBUG);
 
-              strncpy(path, wdir, sizeof(path));
+              snprintf(path, sizeof(path), "%s", wdir);
 
               break;
               }
@@ -6758,11 +6829,11 @@ char *std_file_name(
 
       if (havehomespool == 0)
         {
-        strncpy(path, path_spool, sizeof(path));
+        snprintf(path, sizeof(path), "%s", path_spool);
         }
       else
         {
-        strncat(path, "/", sizeof(path));
+        strncat(path, "/", sizeof(path) - strlen(path) - 1);
         }
 
       } /* END if (spoolasfinalname == FALSE) */
@@ -7026,8 +7097,7 @@ int open_std_file(
         while (strchr(slash + 1, '/') != NULL)
           slash = strchr(slash + 1, '/');
 
-        if (slash != NULL)
-          *slash = '\0';
+        *slash = '\0';
 
         mkdirtree(path,0755);
  
@@ -7044,8 +7114,7 @@ int open_std_file(
       if (still_failed == TRUE)
         {
         /* parent directory does not exist - find out what part of subtree exists */
-        
-        strncpy(tmpLine, path, sizeof(tmpLine));
+        snprintf(tmpLine, sizeof(tmpLine), "%s", path);
         
         while ((ptr = strrchr(tmpLine, '/')) != NULL)
           {
@@ -7901,7 +7970,7 @@ int create_WLM_Rec(
 
   wkm.arrayid = 0;
 
-  strncpy(&wkm.serv_provider[0], "TORQUE          ", sizeof(wkm.serv_provider));
+  snprintf(wkm.serv_provider, sizeof(wkm.serv_provider), "TORQUE          ");
 
   if ((wkm.time = time(NULL)) == (time_t) - 1)
     {
@@ -7935,9 +8004,9 @@ int create_WLM_Rec(
   /*
   * character fields need to be NULL terminated
   */
-  strncpy(&wkm.machname[0], "TORQUE-MACHINE", sizeof(wkm.machname) - 1);
-  strncpy(&wkm.reqname[0], "TORQUE-REQUEST", sizeof(wkm.reqname) - 1);
-  strncpy(&wkm.quename[0], "TORQUE-QUEUE", sizeof(wkm.quename) - 1);
+  snprintf(wkm.machname, sizeof(wkm.machname), "TORQUE-MACHINE");
+  snprintf(wkm.reqname, sizeof(wkm.reqname), "TORQUE-REQUEST");
+  snprintf(wkm.quename, sizeof(wkm.quename), "TORQUE-QUEUE");
   wkm.reqid = reqid;
 
   if (type == WM_TERM)

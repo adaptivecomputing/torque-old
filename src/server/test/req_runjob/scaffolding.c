@@ -130,7 +130,7 @@ int depend_on_exec(job *pjob)
   exit(1);
   }
 
-int unlock_node(struct pbsnode *the_node, char *id, char *msg, int logging)
+int unlock_node(struct pbsnode *the_node, const char *id, char *msg, int logging)
   {
   fprintf(stderr, "The call to unlock_node to be mocked!!\n");
   exit(1);
@@ -331,4 +331,15 @@ int lock_ji_mutex(job *pjob, const char *id, char *msg, int logging)
 batch_request *duplicate_request(struct batch_request *preq)
   {
   return(NULL);
+  }
+
+int unlock_ai_mutex(job_array *pa, const char *id, char *msg, int logging)
+  {
+  return(0);
+  }
+
+int enqueue_threadpool_request(void *(*func)(void *), void *arg)
+
+  {
+  return(0);
   }

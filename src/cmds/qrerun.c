@@ -30,7 +30,7 @@ int main(
   char job_id[PBS_MAXCLTJOBID];       /* from the command line */
 
   char job_id_out[PBS_MAXCLTJOBID];
-  char server_out[PBS_MAXSERVERNAME];
+  char server_out[PBS_MAXSERVERNAME] = "";
   char rmt_server[MAXSERVERNAME];
 
   char extend[1024];
@@ -114,9 +114,9 @@ int main(
     int stat = 0;
     int located = FALSE;
 
-    strcpy(job_id, argv[optind]);
+    snprintf(job_id, sizeof(job_id), "%s", argv[optind]);
 
-    if (get_server(job_id, job_id_out, server_out))
+    if (get_server(job_id, job_id_out, sizeof(job_id_out), server_out, sizeof(server_out)))
       {
       fprintf(stderr, "qrerun: illegally formed job identifier: %s\n",
               job_id);
@@ -134,10 +134,17 @@ cnt:
       {
       any_failed = -1 * connect;
 
-      fprintf(stderr, "qrerun: cannot connect to server %s (errno=%d) %s\n",
+      if (server_out[0] != 0)
+        fprintf(stderr, "qrerun: cannot connect to server %s (errno=%d) %s\n",
+              server_out,
+              any_failed,
+              pbs_strerror(any_failed));
+      else
+        fprintf(stderr, "qrerun: cannot connect to server %s (errno=%d) %s\n",
               pbs_server,
               any_failed,
               pbs_strerror(any_failed));
+
 
       continue;
       }
@@ -159,7 +166,7 @@ cnt:
         {
         pbs_disconnect(connect);
 
-        strcpy(server_out, rmt_server);
+        snprintf(server_out, sizeof(server_out), "%s", rmt_server);
 
         goto cnt;
         }

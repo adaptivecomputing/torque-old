@@ -129,6 +129,7 @@
 #include "ji_mutex.h"
 #include "user_info.h"
 #include "work_task.h"
+#include "req_runjob.h"
 
 
 /* External Functions Called: */
@@ -1344,7 +1345,7 @@ int req_quejob(
     }
   else
     {
-    increment_queued_jobs(pj->ji_wattr[JOB_ATR_job_owner].at_val.at_str, pj);
+    increment_queued_jobs(&users, pj->ji_wattr[JOB_ATR_job_owner].at_val.at_str, pj);
     }
 
   /*
@@ -1374,11 +1375,16 @@ int req_quejob(
 
     hostname = index(oldid, '.');
 
-    *(hostname++) = '\0';
-
-    snprintf(pj->ji_qs.ji_jobid, PBS_MAXSVRJOBID, "%s[].%s",
-      oldid,
-      hostname);
+    if (hostname != NULL)
+      {
+      *(hostname++) = '\0';
+      
+      snprintf(pj->ji_qs.ji_jobid, PBS_MAXSVRJOBID, "%s[].%s",
+        oldid,
+        hostname);
+      }
+    else
+      snprintf(pj->ji_qs.ji_jobid, sizeof(pj->ji_qs.ji_jobid), "%s[]", oldid);
 
     free(oldid);    
     }
@@ -1900,7 +1906,7 @@ int req_rdytocommit(
     log_record(
       PBSEVENT_JOB,
       PBS_EVENTCLASS_JOB,
-      (jobid != NULL) ? jobid : "NULL",
+      jobid,
       "ready to commit job completed");
     }
 
@@ -1988,7 +1994,7 @@ int req_commit(
 
 #ifdef AUTORUN_JOBS
 
-  struct batch_request *preq_run = '\0';
+  struct batch_request *preq_run = NULL;
   pbs_attribute        *pattr;
   int                   nodes_avail = -1;
   int                   dummy;
@@ -2124,7 +2130,7 @@ int req_commit(
 
       return(rc);
       }
-    }  /* end if (pj->ji_wattr[JOB_ATR_job_array_request].at_flags & ATR_VFLAG_SET) */
+    }  /* end if (pj->ji_is_array_template) */
 
   svr_evaljobstate(pj, &newstate, &newsub, 1);
   svr_setjobstate(pj, newstate, newsub, FALSE);
@@ -2225,16 +2231,16 @@ int req_commit(
   if ((pattr->at_val.at_long == 0) && (nodes_avail > 0))
     {
     /* Create a new batch request and fill it in */
-    preq_run = alloc_br(PBS_BATCH_AsyrunJob);
+    preq_run = alloc_br(PBS_BATCH_RunJob);
     preq_run->rq_perm = preq->rq_perm | ATR_DFLAG_OPWR;
     preq_run->rq_ind.rq_run.rq_resch = 0;
     preq_run->rq_ind.rq_run.rq_destin = rq_destin;
     preq_run->rq_fromsvr = preq->rq_fromsvr;
     preq_run->rq_extsz = preq->rq_extsz;
     preq_run->rq_noreply = TRUE; /* set for no replies */
-    memcpy(preq_run->rq_user, preq->rq_user, PBS_MAXUSER + 1);
-    memcpy(preq_run->rq_host, preq->rq_host, PBS_MAXHOSTNAME + 1);
-    memcpy(preq_run->rq_ind.rq_run.rq_jid, preq->rq_ind.rq_rdytocommit,PBS_MAXSVRJOBID + 1);
+    strcpy(preq_run->rq_user, preq->rq_user);
+    strcpy(preq_run->rq_host, preq->rq_host);
+    strcpy(preq_run->rq_ind.rq_run.rq_jid, preq->rq_ind.rq_rdytocommit);
     }
 
 #endif
@@ -2246,10 +2252,13 @@ int req_commit(
   /* if job array, setup the cloning work task */
   if (pj->ji_is_array_template)
     {
+    sprintf(log_buf, "threading job_clone_wt: job id %s", pj->ji_qs.ji_jobid);
+    log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, __func__, log_buf);
     enqueue_threadpool_request(job_clone_wt, strdup(pj->ji_qs.ji_jobid));
     }
     
-  log_event(PBSEVENT_JOB,PBS_EVENTCLASS_JOB,pj->ji_qs.ji_jobid,log_buf);
+  sprintf(log_buf, "job_id: %s", pj->ji_qs.ji_jobid);
+  log_event(PBSEVENT_JOB,PBS_EVENTCLASS_JOB,__func__,log_buf);
 
   if ((pj->ji_qs.ji_svrflags & JOB_SVFLG_HERE) == 0)
     {

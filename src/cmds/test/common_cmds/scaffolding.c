@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include "u_hash_map_structs.h"
 #include "u_memmgr.h"
+#include "dynamic_string.h"
 
 
 int env_add_call = 0;
@@ -98,4 +99,23 @@ void *memmgr_calloc(memmgr **mgr, int qty, int size)
 int memmgr_free(memmgr **mgr, void *ptr)
   {
   return 0;
+  }
+
+int append_dynamic_string(dynamic_string *ds, const char *str)
+  {
+  strcat(ds->str, str);
+  return(0);
+  }
+
+dynamic_string *get_dynamic_string(int size, const char *str)
+  {
+  dynamic_string *ds = calloc(1, sizeof(dynamic_string));
+  ds->str = calloc(1, 1024*10);
+  return(ds);
+  }
+
+void free_dynamic_string(dynamic_string *ds)
+  {
+  free(ds->str);
+  free(ds);
   }

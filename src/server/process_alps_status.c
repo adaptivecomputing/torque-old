@@ -205,10 +205,12 @@ void *check_if_orphaned(
   int                   handle = -1;
   int                   retries = 0;
   struct pbsnode       *pnode;
+  char                  log_buf[LOCAL_LOG_BUF_SIZE];
 
   if (is_orphaned(rsv_id) == TRUE)
     {
-    preq = alloc_br(PBS_BATCH_DeleteReservation);
+    if((preq = alloc_br(PBS_BATCH_DeleteReservation)) == NULL)
+      return NULL;
     preq->rq_extend = rsv_id;
 
     if ((pnode = get_next_login_node(NULL)) != NULL)
@@ -219,6 +221,12 @@ void *check_if_orphaned(
 
       memcpy(&hostaddr, &pnode->nd_sock_addr.sin_addr, sizeof(hostaddr));
       momaddr = ntohl(hostaddr.s_addr);
+
+      snprintf(log_buf, sizeof(log_buf),
+        "Found orphan ALPS reservation ID %s; asking %s to remove it",
+        rsv_id,
+        pnode->nd_name);
+      log_record(PBSEVENT_DEBUG, PBS_EVENTCLASS_SERVER, __func__, log_buf);
 
       while ((handle < 0) &&
              (retries < 3))
@@ -231,11 +239,9 @@ void *check_if_orphaned(
       unlock_node(pnode, __func__, NULL, 0);
       
       if (handle >= 0)
-        {
-        issue_Drequest(handle, preq, release_req, 0);
-        }
-      else
-        free_br(preq);
+        issue_Drequest(handle, preq);
+        
+      free_br(preq);
       }
     }
   else
@@ -290,9 +296,15 @@ int set_ncpus(
   char           *str)
 
   {
-  int ncpus = atoi(str + cproc_eq_len);
-  int difference = ncpus - current->nd_nsn;
+  int ncpus;
+  int difference;
   int i;
+
+  if (current == NULL)
+    return(PBSE_BAD_PARAMETER);
+  
+  ncpus = atoi(str + cproc_eq_len);
+  difference = ncpus - current->nd_nsn;
 
   for (i = 0; i < difference; i++)
     {
@@ -318,6 +330,9 @@ int set_state(
 
   {
   char *state_str = str + strlen("state=");
+
+  if (pnode == NULL)
+    return(PBSE_BAD_PARAMETER);
 
   if (!strcmp(state_str, "UP"))
     update_node_state(pnode, INUSE_FREE);
@@ -411,7 +426,7 @@ int process_gpu_status(
   /* move past the initial gpu status */
   str += strlen(str) + 1;
   
-  for (; str != NULL && *str != '\0'; str += strlen(str) + 1)
+  for (; *str != '\0'; str += strlen(str) + 1)
     {
     if (!strcmp(str, CRAY_GPU_STATUS_END))
       break;
@@ -464,12 +479,17 @@ int record_reservation(
   struct pbssubn *sub_node;
   job            *pjob;
   int             found_job = FALSE;
+  char            jobid[PBS_MAXSVRJOBID + 1];
   
   for (sub_node = pnode->nd_psn; sub_node != NULL; sub_node = sub_node->next)
     {
     if (sub_node->jobs != NULL)
       {
-      if ((pjob = svr_find_job(sub_node->jobs->jobid, TRUE)) != NULL)
+      strcpy(jobid, sub_node->jobs->jobid);
+
+      unlock_node(pnode, __func__, NULL, 0);
+
+      if ((pjob = svr_find_job(jobid, TRUE)) != NULL)
         {
         pjob->ji_wattr[JOB_ATR_reservation_id].at_val.at_str = strdup(rsv_id);
         pjob->ji_wattr[JOB_ATR_reservation_id].at_flags = ATR_VFLAG_SET;
@@ -478,8 +498,11 @@ int record_reservation(
         found_job = TRUE;
 
         unlock_ji_mutex(pjob, __func__, "1", LOGLEVEL);
+        lock_node(pnode, __func__, NULL, 0);
         break;
         }
+      else
+        lock_node(pnode, __func__, NULL, 0);
       }
     }
 
@@ -498,7 +521,12 @@ int process_reservation_id(
   char           *rsv_id_str)
 
   {
-  char           *rsv_id = strdup(rsv_id_str + strlen(reservation_id) + 1);
+  char           *rsv_id;
+
+  if (pnode == NULL)
+    return(PBSE_BAD_PARAMETER);
+ 
+  rsv_id = strdup(rsv_id_str + strlen(reservation_id) + 1);
 
   if (already_recorded(rsv_id) == TRUE)
     enqueue_threadpool_request(check_if_orphaned, rsv_id);
@@ -520,12 +548,15 @@ int process_alps_status(
 
   {
   char           *str;
+  char           *current_node_id = NULL;
   char            node_index_buf[MAXLINE];
   int             node_index = 0;
   struct pbsnode *parent;
   struct pbsnode *current = NULL;
   int             rc;
   pbs_attribute   temp;
+  hash_table_t   *rsv_ht;
+  char            log_buf[LOCAL_LOG_BUF_SIZE];
 
   memset(&temp, 0, sizeof(temp));
 
@@ -538,6 +569,9 @@ int process_alps_status(
   /* if we can't find the parent node, ignore the update */
   if ((parent = find_nodebyname(nd_name)) == NULL)
     return(PBSE_NONE);
+
+  /* keep track of reservations so that they're only processed once per update */
+  rsv_ht = create_hash(INITIAL_RESERVATION_HOLDER_SIZE);
 
   /* loop over each string */
   for (str = status_info->str; str != NULL && *str != '\0'; str += strlen(str) + 1)
@@ -557,6 +591,9 @@ int process_alps_status(
         continue;
       }
 
+    if(current == NULL)
+      continue;
+
     /* process the gpu status information separately */
     if (!strcmp(CRAY_GPU_STATUS_START, str))
       {
@@ -565,12 +602,57 @@ int process_alps_status(
       }
     else if (!strncmp(reservation_id, str, strlen(reservation_id)))
       {
-      process_reservation_id(current, str);
+      char *just_rsv_id = str + strlen(reservation_id);
+
+      if (get_value_hash(rsv_ht, just_rsv_id) == -1)
+        {
+        add_hash(rsv_ht, 1, strdup(just_rsv_id));
+
+        /* sub-functions will attempt to lock a job, so we must unlock the
+         * reporter node */
+        unlock_node(parent, __func__, NULL, 0);
+
+        process_reservation_id(current, str);
+
+        current_node_id = strdup(current->nd_name);
+        unlock_node(current, __func__, NULL, 0);
+
+        /* re-lock the parent */
+        if ((parent = find_nodebyname(nd_name)) == NULL)
+          {
+          /* reporter node disappeared - this shouldn't be possible */
+          log_err(PBSE_UNKNODE, __func__, "Alps reporter node disappeared while recording a reservation");
+          free_arst(&temp);
+          free_all_keys(rsv_ht);
+          free_hash(rsv_ht);
+          free(current_node_id);
+          return(PBSE_NONE);
+          }
+
+        if ((current = find_node_in_allnodes(&parent->alps_subnodes, current_node_id)) == NULL)
+          {
+          /* current node disappeared, this shouldn't be possible either */
+          unlock_node(parent, __func__, NULL, 0);
+          snprintf(log_buf, sizeof(log_buf), "Current node '%s' disappeared while recording a reservation",
+            current_node_id);
+          log_err(PBSE_UNKNODE, __func__, log_buf);
+          free_arst(&temp);
+          free_all_keys(rsv_ht);
+          free_hash(rsv_ht);
+          free(current_node_id);
+          return(PBSE_NONE);
+          }
+
+        free(current_node_id);
+        current_node_id = NULL;
+        }
       }
     /* save this as is to the status strings */
     else if ((rc = decode_arst(&temp, NULL, NULL, str, 0)) != PBSE_NONE)
       {
       free_arst(&temp);
+      free_all_keys(rsv_ht);
+      free_hash(rsv_ht);
       return(rc);
       }
 
@@ -595,6 +677,9 @@ int process_alps_status(
     }
 
   unlock_node(parent, __func__, NULL, 0);
+
+  free_all_keys(rsv_ht);
+  free_hash(rsv_ht);
 
   return(PBSE_NONE);
   } /* END process_alps_status() */

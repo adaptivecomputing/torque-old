@@ -12,6 +12,7 @@
 #include "pbs_error.h"
 #include "batch_request.h"
 #include "pbs_job.h"
+#include "hash_map.h"
 
 #ifndef TRUE
 #define TRUE 1
@@ -142,7 +143,7 @@ typedef struct job_array job_array;
 
 struct all_arrays
   {
-  resizable_array *ra;
+  hash_map        *hm;
 
   pthread_mutex_t *allarrays_mutex;
   };
@@ -152,8 +153,6 @@ int  array_delete(job_array *pa);
 int  array_save(job_array *pa);
 int  array_save(job_array *pa);
 void array_get_parent_id(char *job_id, char *parent_id);
-
-job *find_array_template(char *arrayid);
 
 job_array *get_array(char *id);
 int array_recov(char *path, job_array **pa);
@@ -178,9 +177,9 @@ int release_array_range(job_array *,struct batch_request *,char *);
 
 int first_job_index(job_array *);
 
-void update_array_statuses(job_array *);
+void update_array_statuses();
 
-int num_array_jobs(char *);
+int num_array_jobs(const char *);
 
 int        insert_array(job_array *);
 int        remove_array(job_array *);

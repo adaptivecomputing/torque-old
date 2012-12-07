@@ -40,7 +40,6 @@ char *msg_info_mom = "Torque Mom Version = %s, loglevel = %d";
 hash_table_t *received_table;
 threadpool_t *request_pool;
 AvlTree okclients;
-time_t pbs_tcp_timeout = 20;
 time_t wait_time = 10;
 pthread_mutex_t *log_mutex;
 dynamic_string  *mom_status;
@@ -455,7 +454,7 @@ void dep_initialize(void)
   exit(1);
   }
 
-void append_link(tlist_head *head, list_link *new, void *pobj)
+void append_link(tlist_head *head, list_link *new_link, void *pobj)
   {
   fprintf(stderr, "The call to append_link needs to be mocked!!\n");
   exit(1);
@@ -674,3 +673,12 @@ void DIS_tcp_cleanup(struct tcp_chan *chan) {}
 
 void initialize_network_info() {}
 
+void *pop_thing(resizable_array *ra)
+  {
+  return(NULL);
+  }
+
+int insert_thing_after(resizable_array *ra, void *thing, int i)
+  {
+  return(0);
+  }

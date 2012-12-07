@@ -30,7 +30,7 @@ dnl added library functionality to testing
 dnl by John Rosenquist (jrosenquist@adaptivecomputing.com)
 
 AC_PREREQ(2.53)
-AC_INIT([torque], [4.1.0], [torqueusers@supercluster.org])
+AC_INIT([torque], [4.2.0], [torqueusers@supercluster.org])
 AC_REVISION($Revision$)
 AC_CONFIG_SRCDIR([src/cmds/qrun.c])
 AC_CONFIG_AUX_DIR([buildutils])
@@ -67,6 +67,17 @@ dnl  Instead of putting a long list of defines on the command line
 dnl  for each compile, use a file called "pbs_config.h" that will
 dnl  be created in the include directory.
 AM_CONFIG_HEADER([src/include/pbs_config.h])
+
+dnl
+dnl Find our svn revision number for program outputs
+dnl
+AC_PATH_PROG(svnversioncommand, svnversion)
+if test "X$svnversioncommand" != "X" && test `$svnversioncommand -n '.'` != "exported"; then
+  AC_DEFINE_UNQUOTED(SVN_VERSION, ["`svnversion -n`"], [repository svn version])
+else
+  AC_DEFINE_UNQUOTED(SVN_VERSION, ["unknown"], [repository svn version])
+fi
+
 
 
 dnl
@@ -346,6 +357,7 @@ m4_ifdef([AM_SILENT_RULES],[
     src/lib/Libutils/test/u_MXML/Makefile
     src/lib/Libutils/test/u_dynamic_string/Makefile
     src/lib/Libutils/test/u_groups/Makefile
+    src/lib/Libutils/test/u_hash_map/Makefile
     src/lib/Libutils/test/u_hash_map_structs/Makefile
     src/lib/Libutils/test/u_hash_table/Makefile
     src/lib/Libutils/test/u_lock_ctl/Makefile
@@ -389,10 +401,13 @@ m4_ifdef([AM_SILENT_RULES],[
     src/server/test/array_func/Makefile
     src/server/test/array_upgrade/Makefile
     src/server/test/attr_recov/Makefile
+    src/server/test/batch_request/Makefile
     src/server/test/dis_read/Makefile
     src/server/test/display_alps_status/Makefile
+    src/server/test/exiting_jobs/Makefile
     src/server/test/geteusernam/Makefile
     src/server/test/issue_request/Makefile
+    src/server/test/job_container/Makefile
     src/server/test/job_func/Makefile
     src/server/test/job_qs_upgrade/Makefile
     src/server/test/job_recov/Makefile
@@ -404,9 +419,11 @@ m4_ifdef([AM_SILENT_RULES],[
     src/server/test/pbsd_init/Makefile
     src/server/test/pbsd_main/Makefile
     src/server/test/process_alps_status/Makefile
+    src/server/test/process_mom_update/Makefile
     src/server/test/process_request/Makefile
     src/server/test/queue_func/Makefile
     src/server/test/queue_recov/Makefile
+    src/server/test/receive_mom_communication/Makefile
     src/server/test/reply_send/Makefile
     src/server/test/req_delete/Makefile
     src/server/test/req_deletearray/Makefile
@@ -702,10 +719,10 @@ AC_CHECK_LIB(crypto, BN_init,
 dnl
 dnl we need libxml2
 dnl 
-xmlLib=`xml2-config --libs`
+xmlLib=`xml2-config --libs | sed 's/-L@<:@^@<:@:space:@:>@@:>@* //g;s/-l//'`
 
 dnl skip the first two chars because its -l<libname>
-AC_CHECK_LIB(${xmlLib:2}, xmlGetProp,
+AC_CHECK_LIB(${xmlLib}, xmlGetProp,
   [],
   [AC_MSG_ERROR([TORQUE needs libxml2-devel in order to build]) ])
 
@@ -845,6 +862,17 @@ AC_DEFINE_UNQUOTED(IBM_SP2, ${IBM_SP2}, [defined if this is an SP2])
 AC_SUBST(PBSPOE)    
 AC_SUBST(PBSPOEO)
 
+AC_ARG_ENABLE(maxint-jobids, [  --enable-maxint-jobids       enables job ids to go up to maxint])
+maxint_ids=0
+AC_MSG_CHECKING([whether to enable maxint job ids])
+if test "x$enable_maxint_jobids" = "xyes" ; then
+  AC_MSG_RESULT([yes])
+  maxint_ids=1
+  CFLAGS="$CFLAGS -DUSE_MAXINT_JOBIDS"
+else
+  AC_MSG_RESULT([no])
+fi
+
 AC_ARG_ENABLE(cpuset,[  --enable-cpuset         enable Linux 2.6 kernel cpusets])
 build_l26_cpuset=no
 cpuset=0
@@ -906,6 +934,66 @@ fi
 
 
 dnl
+dnl add the option to view coverage when executing TORQUE 
+dnl
+AC_ARG_ENABLE(coverage, [
+  --enable-coverage   Builds TORQUE with --coverage in order to allow evaluation of what parts of the code are being exercised. This is mainly useful for quality assurance.])
+if test "x$GCC" = "xyes" ;then
+  AC_MSG_CHECKING([whether to compile with coverage])
+  if test "${enable_coverage}" = "yes" ; then
+    AC_MSG_RESULT([yes])
+    CFLAGS="$CFLAGS --coverage"
+  else
+    AC_MSG_RESULT([no])
+  fi
+fi
+
+
+
+
+dnl
+dnl tell TORQUE where to find the MIC libs
+dnl
+AC_ARG_WITH(mic-path, [
+  --with-mic-path=PATH
+                     Specifies the path to the mic COI libraries and include files.
+                     Example: ./configure --with-mic-path=/opt/intel/mic/coi will
+                     specify that the include files are in /opt/intel/mic/coi/include
+                     and the libraries are in /opt/intel/mic/coi/host-linux-release/lib],
+  [MOMLIBS="$MOMLIBS -L${withval}/host-linux-release/lib"; CFLAGS="$CFLAGS -I${withval}/include"],
+  [MOMLIBS="$MOMLIBS -L/opt/intel/mic/coi/host-linux-release/lib"; CFLAGS="$CFLAGS -I/opt/intel/mic/coi/include"])
+
+
+dnl
+dnl enable mic support
+dnl
+AC_MSG_CHECKING([whether to compile with MIC support])
+AC_ARG_ENABLE(mic, [
+  --enable-mic   Builds TORQUE with mic support so that pbs_mom will auto-detect the mics and report a status for each mic on that host. If no mic exists, the pbs_mom will behave normally],
+  MIC=$enableval,MIC=no)
+AC_MSG_RESULT($MIC)
+
+case "$MIC" in
+  yes) AC_DEFINE([MIC], 1, [Define to enable MIC support]) ;;
+  no) : ;;
+  *) AC_MSG_ERROR([--enable-mic-gpus should be yes or no]) ;;
+esac
+AM_CONDITIONAL([MIC], test "$MIC" = yes)
+
+if test "$MIC" = "yes" ; then
+  MOMLIBS="$MOMLIBS -lcoi_host"
+  CPPFLAGS="$CPPFLAGS $CFLAGS"
+  AC_CHECK_HEADERS([source/COIPipeline_source.h],
+    [],
+    [AC_MSG_ERROR(MIC COI LLAPI headers not found)],
+    [])
+fi
+
+
+
+
+
+dnl
 dnl add an option to specify a different path where TORQUE should look for HWLOC 
 dnl lib and include files
 dnl
@@ -932,15 +1020,14 @@ if test "${build_l26_cpuset}" = "yes" ; then
 
 $HWLOC_PKG_ERRORS
 
-Perhaps you should add the directory containing 'hwloc.pc'
+This can be solved by configuring with --with-hwloc-path=<path>. This path
+should be the path to the directory containing the lib/ and include/ directories
+for your version of hwloc.
+Another option is adding the directory containing 'hwloc.pc'
 to the PKG_CONFIG_PATH environment variable.
 
-Alternatively, you may set the environment variables 
-HWLOC_CFLAGS and HWLOC_LIBS before running configure.
-
-Example:
-export HWLOC_CFLAGS='-I/usr/local/hwloc-1.1/include'
-export HWLOC_LIBS='-L/usr/local/hwloc-1.1/lib -lhwloc'
+If you have done these and still get this  error, try running ./autogen.sh and
+then configuring again.
 ])])
     olibs=$LIBS
     LIBS="$LIBS $HWLOC_LIBS";
@@ -1127,6 +1214,7 @@ case "$NVIDIA" in
   no) : ;;
   *) AC_MSG_ERROR([--enable-nvidia-gpus should be yes or no]) ;;
 esac
+AM_CONDITIONAL([NVIDIA], test "$NVIDIA" = yes)
 
 AC_ARG_WITH(nvml_include,
     [  --with-nvml-include=DIR include path for nvml.h],
@@ -2189,5 +2277,11 @@ the build to fail if any compiler warnings are emitted.  If this build fails
 because of a harmless warning, please report the problem to $PACKAGE_BUGREPORT
 and run configure again without --enable-gcc-warnings.])
    echo
+fi
+
+if test "${maxint_ids}" = "1" ; then
+  AC_MSG_WARN([You are enabling job ids to go up to the maximum value of an int 
+    on your system. Depending on the size of your system, this may make existing 
+    jobs impossible to upgrade. BE CERTAIN BEFORE PROCEEDING!])
 fi
 echo "Ready for '${MAKE-make}'."

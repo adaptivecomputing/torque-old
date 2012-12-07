@@ -325,6 +325,15 @@ void req_quejob(
     pj->ji_qs.ji_svrflags = created_here;
 
     pj->ji_qs.ji_un_type  = JOB_UNION_TYPE_NEW;
+
+    /* changing the union type overwrites the euid for the job, and if
+     * ji_grpcache is set this potentially allows jobs to run as root. Unsetting
+     * ji_grpcache fixes this problem --dbeer */
+    if (pj->ji_grpcache != NULL)
+      {
+      free(pj->ji_grpcache);
+      pj->ji_grpcache = NULL;
+      }
     }
 
   /* decode attributes from request into job structure */
@@ -451,6 +460,12 @@ void req_quejob(
 
       append_link(&svr_newjobs,&pj->ji_alljobs,pj);
 
+      if (pj->ji_grpcache != NULL)
+        {
+        free(pj->ji_grpcache);
+        pj->ji_grpcache = NULL;
+        }
+
       pj->ji_qs.ji_un_type = JOB_UNION_TYPE_NEW;
       pj->ji_qs.ji_un.ji_newt.ji_fromsock = sock;
       pj->ji_qs.ji_un.ji_newt.ji_fromaddr = get_connectaddr(sock,FALSE);
@@ -481,6 +496,12 @@ void req_quejob(
 
   pj->ji_wattr[JOB_ATR_mtime].at_val.at_long = (long)time_now;
   pj->ji_wattr[JOB_ATR_mtime].at_flags |= ATR_VFLAG_SET;
+
+  if (pj->ji_grpcache != NULL)
+    {
+    free(pj->ji_grpcache);
+    pj->ji_grpcache = NULL;
+    }
 
   pj->ji_qs.ji_un_type = JOB_UNION_TYPE_NEW;
   pj->ji_qs.ji_un.ji_newt.ji_fromsock = sock;
@@ -720,14 +741,15 @@ void req_mvjobfile(
       preq->rq_ind.rq_jobfile.rq_jobid,
       TJobFileType[jft]);
 
-    log_err(-1, "req_mvjobfile", log_buffer);
+    log_err(-1, __func__, log_buffer);
 
     req_reject(PBSE_UNKJOBID, 0, preq, NULL, NULL);
 
     return;
     }
 
-  if ((pj->ji_grpcache == NULL) && (check_pwd(pj) == NULL))
+  if ((pj->ji_grpcache == NULL) && 
+      (check_pwd(pj) == NULL))
     {
     req_reject(PBSE_UNKJOBID, 0, preq, NULL, NULL);
 
@@ -744,7 +766,7 @@ void req_mvjobfile(
 
   if ((fds = open_std_file(pj, jft, oflag, pwd->pw_gid)) < 0)
     {
-    int keeping = 1;
+    int   keeping = 1;
     char *path = std_file_name(pj, jft, &keeping);
 
     snprintf(log_buffer,sizeof(log_buffer),
@@ -765,23 +787,23 @@ void req_mvjobfile(
     }
   else
     {
+    if (LOGLEVEL >= 6)
+      {
+      sprintf(log_buffer, "successfully moved %s file for job '%s'",
+        TJobFileType[jft],
+        preq->rq_ind.rq_jobfile.rq_jobid);
+      
+      log_record(
+        PBSEVENT_JOB,
+        PBS_EVENTCLASS_JOB,
+        (pj != NULL) ? pj->ji_qs.ji_jobid : "NULL",
+        log_buffer);
+      }
+
     reply_ack(preq);
     }
 
   close(fds);
-
-  if (LOGLEVEL >= 6)
-    {
-    sprintf(log_buffer, "successfully moved %s file for job '%s'",
-            TJobFileType[jft],
-            preq->rq_ind.rq_jobfile.rq_jobid);
-
-    log_record(
-      PBSEVENT_JOB,
-      PBS_EVENTCLASS_JOB,
-      (pj != NULL) ? pj->ji_qs.ji_jobid : "NULL",
-      log_buffer);
-    }
 
   return;
   }  /* END req_mvjobfile() */

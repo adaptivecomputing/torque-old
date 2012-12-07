@@ -94,10 +94,11 @@ int diswui_(
   {
   unsigned ndigs;
   char  *cp = NULL;
-  char  scratch[DIS_BUFSIZ+1];
+  char  scratch[DIS_BUFSIZ];
   
-  memset(scratch, 0, DIS_BUFSIZ+1);
-  cp = discui_(&scratch[DIS_BUFSIZ], value, &ndigs);
+  memset(scratch, 0, sizeof(scratch));
+
+  cp = discui_(&scratch[sizeof(scratch)-1], value, &ndigs);
   if  (cp == NULL)
     {
     return(DIS_PROTO);

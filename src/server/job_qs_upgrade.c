@@ -242,7 +242,7 @@ int job_qs_upgrade(
     sprintf(log_buf, "unable to reset fds\n");
     log_err(-1, __func__, log_buf);
 
-    return (-1);
+    return(-1);
     }
 
   snprintf(namebuf, sizeof(namebuf), "%s", path);
@@ -252,18 +252,30 @@ int job_qs_upgrade(
     {
     sprintf(log_buf, "ERROR: path too long for buffer, unable to backup!\n");
     log_err(-1, __func__, log_buf);
-    return (-1);
+    return(-1);
     }
 
   strcat(namebuf, JOB_FILE_BACKUP);
 
-  source = fdopen(dup(fds), "r");
+    {
+    int fdsDup = dup(fds);
+    source = (fdsDup < 0)?NULL:fdopen(fdsDup, "r");
+    if(source == NULL)
+      {
+      sprintf(log_buf, "Can't duplicate fds.\n");
+      log_err(errno, __func__, log_buf);
+
+      return(-1);
+      }
+    }
 
   if ((backup = fopen(namebuf, "wb")) == NULL)
     {
     sprintf(log_buf, "Cannot open backup file.\n");
     log_err(errno, __func__, log_buf);
-    return -1;
+    fclose(source);
+
+    return(-1);
     }
 
   while ((c = fgetc(source)) != EOF)
@@ -283,7 +295,7 @@ int job_qs_upgrade(
     sprintf(log_buf, "unable to reset fds\n");
     log_err(-1, __func__, log_buf);
 
-    return (-1);
+    return(-1);
     }
 
   if (version > PBS_QS_VERSION)

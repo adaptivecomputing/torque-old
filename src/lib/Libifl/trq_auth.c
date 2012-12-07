@@ -6,6 +6,7 @@
 #include <stdio.h> /* sprintf */
 #include <arpa/inet.h> /* inet_addr */
 #include "../Libnet/lib_net.h" /* get_hostaddr, socket_* */
+#include "../../include/log.h" /* log event types */
 
 
 char *trq_addr = NULL;
@@ -224,25 +225,29 @@ void send_svr_disconnect(int sock, char *user_name)
   }
 
 void *process_svr_conn(
-    void *sock)
+    
+  void *sock)
+
   {
-  int rc = PBSE_NONE;
+  char *className = "trqauthd";
+  int   rc = PBSE_NONE;
   char *server_name = NULL;
-  int server_port = 0;
-  int auth_type = 0;
+  int   server_port = 0;
+  int   auth_type = 0;
   char *user_name = NULL;
-  int user_sock = 0;
+  int   user_sock = 0;
   char *error_msg = NULL;
   char *send_message = NULL;
-  int send_len = 0;
+  int   send_len = 0;
   char *trq_server_addr = NULL;
-  int trq_server_addr_len = 0;
-  int disconnect_svr = TRUE;
-  int svr_sock = 0;
-  int msg_len = 0;
-  int debug_mark = 0;
-  int local_socket = *(int *)sock;
-  /*free(sock);*/
+  int   trq_server_addr_len = 0;
+  int   disconnect_svr = TRUE;
+  int   svr_sock = 0;
+  int   msg_len = 0;
+  int   debug_mark = 0;
+  int   local_socket = *(int *)sock;
+  char  msg_buf[1024];
+
   /* incoming message format is:
    * trq_system_len|trq_system|trq_port|Validation_type|user_len|user|psock|
    * message format to pbs_server is:
@@ -258,6 +263,7 @@ void *process_svr_conn(
    * msg to client in the case of success:
    * 0|0||
    */
+
   if ((rc = parse_request_client(local_socket, &server_name, &server_port, &auth_type, &user_name, &user_sock)) != PBSE_NONE)
     {
     disconnect_svr = FALSE;
@@ -268,7 +274,7 @@ void *process_svr_conn(
     disconnect_svr = FALSE;
     debug_mark = 2;
     }
-  else if ((svr_sock = socket_get_tcp_priv()) <= 0)
+  else if ((svr_sock = socket_get_tcp_priv()) < 0)
     {
     rc = PBSE_SOCKET_FAULT;
     disconnect_svr = FALSE;
@@ -278,23 +284,28 @@ void *process_svr_conn(
     {
     disconnect_svr = FALSE;
     debug_mark = 4;
+    socket_close(svr_sock);
     }
   else if ((rc = build_request_svr(auth_type, user_name, user_sock, &send_message)) != PBSE_NONE)
     {
+    socket_close(svr_sock);
     debug_mark = 5;
     }
-  else if ((send_len = strlen(send_message)) <= 0)
+  else if ((send_len = ((send_message == NULL)?0:strlen(send_message)) ) <= 0)
     {
+    socket_close(svr_sock);
     rc = PBSE_INTERNAL;
     debug_mark = 6;
     }
   else if ((rc = socket_write(svr_sock, send_message, send_len)) != send_len)
     {
+    socket_close(svr_sock);
     rc = PBSE_SOCKET_WRITE;
     debug_mark = 7;
     }
   else if ((rc = parse_response_svr(svr_sock, &error_msg)) != PBSE_NONE)
     {
+    socket_close(svr_sock);
     debug_mark = 8;
     }
   else
@@ -303,12 +314,19 @@ void *process_svr_conn(
     if (send_message != NULL)
       free(send_message);
     send_message = (char *)calloc(1, 6);
-    strcat(send_message, "0|0||");
+    if(send_message != NULL)
+      strcat(send_message, "0|0||");
     if (debug_mode == TRUE)
       {
       fprintf(stderr, "Conn to %s port %d success. Conn %d authorized\n", server_name, server_port, user_sock);
       }
+
+    snprintf(msg_buf, sizeof(msg_buf),
+      "User %s at IP:port %s:%d logged in", user_name, server_name, server_port);
+    log_record(PBSEVENT_CLIENTAUTH, PBS_EVENTCLASS_TRQAUTHD,
+      className, msg_buf);
     }
+
   if (rc != PBSE_NONE)
     {
     /* Failure case */
@@ -319,29 +337,48 @@ void *process_svr_conn(
       error_msg = strdup(pbse_to_txt(rc));
     msg_len += strlen(error_msg);
     send_message = (char *)calloc(1, msg_len);
-    snprintf(send_message, msg_len, "%d|%d|%s|", rc, (int)strlen(error_msg), error_msg);
+    if(send_message != NULL)
+      snprintf(send_message, msg_len, "%d|%d|%s|", rc, (int)strlen(error_msg), error_msg);
     if (debug_mode == TRUE)
       {
       fprintf(stderr, "Conn to %s port %d Fail. Conn %d not authorized (dm = %d, Err Num %d)\n", server_name, server_port, user_sock, debug_mark, rc);
       }
+
+    snprintf(msg_buf, sizeof(msg_buf),
+      "User %s at IP:port %s:%d login attempt failed --%s", user_name, server_name, server_port, error_msg);
+    log_record(PBSEVENT_CLIENTAUTH, PBS_EVENTCLASS_TRQAUTHD,
+      className, msg_buf);
     }
-  rc = socket_write(local_socket, send_message, strlen(send_message));
+
+  if(send_message != NULL)
+    rc = socket_write(local_socket, send_message, strlen(send_message));
+
   if (TRUE == disconnect_svr)
     {
     send_svr_disconnect(svr_sock, user_name);
     socket_close(svr_sock);
     }
+
   if (trq_server_addr != NULL)
     free(trq_server_addr);
+
   if (server_name != NULL)
     free(server_name);
+
   if (user_name != NULL)
     free(user_name);
+
   if (error_msg != NULL)
     free(error_msg);
+
   if (send_message != NULL)
     free(send_message);
+
   socket_close(local_socket);
   free(sock);
-  return NULL;
-  }
+
+  return(NULL);
+  } /* END process_svr_conn() */
+
+
+

@@ -9,6 +9,8 @@
  */
 
 int get_svr_attr_l(int index, long *l);
+int get_svr_attr_str(int index, char **str);
+int get_svr_attr_arst(int index, struct array_strings **arst);
 
 extern int   chk_hold_priv(long hold, int priv);
 extern void  get_jobowner(char *from, char *to); 
@@ -37,8 +39,6 @@ int set_svr_attr(int, void *);
 
 #ifdef PBS_JOB_H
 extern int   set_nodes(job *, char *, int, char **, char **, char *, char *);
-extern int   is_ts_node(char *);
-extern char *find_ts_node(void);
 extern void  free_nodes(job *);
 #endif /* PBS_JOB_H */
 
@@ -57,10 +57,9 @@ extern int   svr_connect(pbs_net_t, unsigned int, int *, struct pbsnode *, void 
 
 #ifdef WORK_TASK_H
 extern void  release_req(struct work_task *);
-#ifdef BATCH_REQUEST_H
-extern int   issue_Drequest(int, struct batch_request *, void (*)(), struct work_task **);
-#endif /* BATCH_REQUEST_H */
 #endif /* WORK_TASK_H */
+
+extern int   issue_Drequest(int, struct batch_request *);
 
 
 /* The following is used in req_stat.c and req_select.c */

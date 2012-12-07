@@ -99,7 +99,7 @@
 #include "server.h"
 #include "utils.h"
 #include "threadpool.h"
-#include "svr_func.h" /* get_svr_attr_* */
+#include "svrfunc.h" /* get_svr_attr_* */
 
 /* External Functions Called */
 
@@ -506,6 +506,7 @@ void svr_mailowner(
     if (mi->jobname == NULL)
       {
       log_err(ENOMEM, __func__, memory_err);
+      free(mi);
       return;
       }
     }
@@ -516,6 +517,7 @@ void svr_mailowner(
     {
     if ((mi->text = strdup(text)) == NULL)
       {
+      free(mi);
       log_err(ENOMEM, __func__, memory_err);
       return;
       }

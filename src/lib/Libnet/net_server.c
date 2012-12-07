@@ -556,28 +556,22 @@ int wait_request(
   long   *SState)     /* I (optional) */
 
   {
-  int i;
-  int n;
+  int             i;
+  int             n;
+  time_t          now;
 
-  time_t now;
+  fd_set         *SelectSet = NULL;
+  int             SelectSetSize = 0;
+  int             MaxNumDescriptors = 0;
 
-  fd_set *SelectSet = NULL;
-  int SelectSetSize = 0;
-
-  int MaxNumDescriptors = 0;
-
-  char id[] = "wait_request";
-  char tmpLine[1024];
-
-  struct timeval timeout;
-
-  long OrigState = 0;
+  char            tmpLine[1024];
+  struct timeval  timeout;
+  long            OrigState = 0;
 
   if (SState != NULL)
     OrigState = *SState;
 
   timeout.tv_usec = 0;
-
   timeout.tv_sec  = waittime;
 
   SelectSetSize = sizeof(char) * get_fdset_size();
@@ -624,16 +618,14 @@ int wait_request(
 
       free(SelectSet);
 
-      log_err(errno, id, "Unable to select sockets to read requests");
-
+      log_err(errno, __func__, "Unable to select sockets to read requests");
 
       return(-1);
       }  /* END else (errno == EINTR) */
     }    /* END if (n == -1) */
 
-  for (i = 0; (i < max_connection) && (n != 0); i++)
+  for (i = 0; (i < max_connection) && (n > 0); i++)
     {
-
     if (FD_ISSET(i, SelectSet))
       {
       pthread_mutex_lock(svr_conn[i].cn_mutex);
@@ -673,7 +665,7 @@ int wait_request(
           num_connections);
 
         pthread_mutex_unlock(num_connections_mutex);
-        log_err(-1, id, tmpLine);
+        log_err(-1, __func__, tmpLine);
         }
       }
     } /* END for i */
@@ -736,7 +728,7 @@ int wait_request(
     pthread_mutex_unlock(svr_conn[i].cn_mutex);
     }  /* END for (i) */
 
-  return(0);
+  return(PBSE_NONE);
   }  /* END wait_request() */
 
 
@@ -759,12 +751,13 @@ void *accept_conn(
   void *new_conn)  /* main socket with connection request pending */
 
   {
-  int newsock;
+  int                newsock;
   struct sockaddr_in from;
   struct sockaddr_un unixfrom;
-  torque_socklen_t fromsize;
-  int sd = *(int *)new_conn;
-  int sock_type = -1;
+  torque_socklen_t   fromsize;
+  int                sd = *(int *)new_conn;
+  unsigned short     sock_type = 0;
+  enum conn_type     cn_active;
 
   from.sin_addr.s_addr = 0;
   from.sin_port = 0;
@@ -782,6 +775,7 @@ void *accept_conn(
   pthread_mutex_lock(svr_conn[sd].cn_mutex);
   svr_conn[sd].cn_lasttime = time((time_t *)0);
   sock_type = svr_conn[sd].cn_socktype;
+  cn_active = svr_conn[sd].cn_active;
   pthread_mutex_unlock(svr_conn[sd].cn_mutex);
 
   if (sock_type == PBS_SOCK_INET)
@@ -810,8 +804,8 @@ void *accept_conn(
       FromClientDIS,
       (pbs_net_t)ntohl(from.sin_addr.s_addr),
       (unsigned int)ntohs(from.sin_port),
-      svr_conn[sd].cn_socktype,
-      read_func[(int)svr_conn[sd].cn_active]);
+      sock_type,
+      read_func[cn_active]);
     }
 
 
@@ -923,7 +917,7 @@ int add_connection(
 
   pthread_mutex_unlock(svr_conn[sock].cn_mutex);
 
-  return PBSE_NONE;
+  return(PBSE_NONE);
   }  /* END add_connection() */
 
 
@@ -987,12 +981,12 @@ void close_conn(
   int has_mutex) /* I */
 
   {
-  char log_message[LOG_BUF_SIZE+1];
+  char log_message[LOG_BUF_SIZE];
   
   if ((sd < 0) ||
       (max_connection <= sd))
     {
-    snprintf(log_message, LOG_BUF_SIZE, "sd is invalid %d!!!", sd);
+    snprintf(log_message, sizeof(log_message), "sd is invalid %d!!!", sd);
     log_event(PBSEVENT_SYSTEM,PBS_EVENTCLASS_NODE,__func__,log_message);
 
     return;
@@ -1011,7 +1005,7 @@ void close_conn(
 
   /* if there is a function to call on close, do it */
 
-  if (svr_conn[sd].cn_oncl != 0)
+  if (svr_conn[sd].cn_oncl != NULL)
     {
     snprintf(log_message, LOG_BUF_SIZE, "Connection %d - func %lx",
       sd, (unsigned long)svr_conn[sd].cn_oncl);
@@ -1075,7 +1069,7 @@ void net_close(
       {
       pthread_mutex_lock(svr_conn[i].cn_mutex);
 
-      svr_conn[i].cn_oncl = 0;
+      svr_conn[i].cn_oncl = NULL;
 
       close_conn(i,TRUE);
 
@@ -1160,18 +1154,23 @@ int get_connecthost(
   struct sockaddr        *addr_info_ptr;
   struct sockaddr_in      addr_in;
   char                   *name;
+  int                     socktype_flag;
 
   addr_in.sin_family = AF_INET;
   addr_in.sin_port = 0;
 
   size--;
 
+  pthread_mutex_lock(svr_conn[sock].cn_mutex);
   addr.s_addr = htonl(svr_conn[sock].cn_addr);
+  socktype_flag = svr_conn[sock].cn_socktype & PBS_SOCK_UNIX;
+  pthread_mutex_unlock(svr_conn[sock].cn_mutex);
+
   addr_in.sin_addr = addr;
   addr_info_ptr = (struct sockaddr *)&addr_in;
 
   if ((net_server_name != NULL) &&
-      (svr_conn[sock].cn_socktype & PBS_SOCK_UNIX))
+      (socktype_flag != 0))
     {
     /* lookup request is for local server */
 

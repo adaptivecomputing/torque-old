@@ -5,7 +5,6 @@
  * pbsnlist     - the server's global node list
  * svr_totnodes - total number of pbshost entries
  * svr_clnodes  - number of cluster (space-shared) nodes
- * svr_tsnodes  - number of time-shared nodes, one per host
  *
  * Included functions are:
  * find_nodebyname() - find a node host with a given name
@@ -49,7 +48,7 @@
 #include "req_manager.h" /* mgr_set_node_attr */
 #include "../lib/Libutils/u_lock_ctl.h" /* lock_node, unlock_node */
 #include "../lib/Libnet/lib_net.h" /* get_addr_info */
-#include "svr_func.h" /* get_svr_attr_* */
+#include "svrfunc.h" /* get_svr_attr_* */
 #include "alps_constants.h"
 #include "login_nodes.h"
 #include "work_task.h"
@@ -65,7 +64,6 @@ extern int h_errno;
 extern hello_container  failures;
 extern struct addrinfo  hints;
 extern int              svr_totnodes;
-extern int              svr_tsnodes;
 extern int              svr_clnodes;
 extern char            *path_nodes_new;
 extern char            *path_nodes;
@@ -558,18 +556,18 @@ int login_encode_jobs(
 
 int status_nodeattrib(
 
-  svrattrl        *pal,         /*an svrattrl from the request  */
-  attribute_def   *padef, /*the defined node attributes   */
-  struct pbsnode  *pnode, /*no longer an pbs_attribute ptr */
-  int              limit, /*number of array elts in padef */
-  int              priv, /*requester's privilege  */
+  svrattrl        *pal,    /*an svrattrl from the request  */
+  attribute_def   *padef,  /*the defined node attributes   */
+  struct pbsnode  *pnode,  /*no longer an pbs_attribute ptr */
+  int              limit,  /*number of array elts in padef */
+  int              priv,   /*requester's privilege  */
 
   tlist_head       *phead, /*heads list of svrattrl structs that hang */
-  /*off the brp_attr member of the status sub*/
-  /*structure in the request's "reply area"  */
+                           /*off the brp_attr member of the status sub*/
+                           /*structure in the request's "reply area"  */
 
-  int             *bad)         /*if node-pbs_attribute error, record it's*/
-/*list position here                 */
+  int             *bad)    /*if node-pbs_attribute error, record it's*/
+                           /*list position here                 */
 
   {
   int   i;
@@ -586,37 +584,49 @@ int status_nodeattrib(
     {
     /*set up attributes using data from node*/
 
-    if (!strcmp((padef + i)->at_name, ATTR_NODE_state))
+    if (i == ND_ATR_state)
       atemp[i].at_val.at_short = pnode->nd_state;
-    else if (!strcmp((padef + i)->at_name, ATTR_NODE_properties))
+    else if (i == ND_ATR_properties)
       atemp[i].at_val.at_arst = pnode->nd_prop;
-    else if (!strcmp((padef + i)->at_name, ATTR_NODE_status))
+    else if (i == ND_ATR_status)
       atemp[i].at_val.at_arst = pnode->nd_status;
-    else if (!strcmp((padef + i)->at_name, ATTR_NODE_ntype))
+    else if (i == ND_ATR_ntype)
       atemp[i].at_val.at_short = pnode->nd_ntype;
-    else if (!strcmp((padef + i)->at_name, ATTR_NODE_jobs))
+    else if (i == ND_ATR_jobs)
       atemp[i].at_val.at_jinfo = pnode;
-    else if (!strcmp((padef + i)->at_name, ATTR_NODE_np))
+    else if (i == ND_ATR_np)
       atemp[i].at_val.at_long = pnode->nd_nsn;
-    else if (!strcmp((padef + i)->at_name, ATTR_NODE_note))
+    else if (i == ND_ATR_note)
       atemp[i].at_val.at_str  = pnode->nd_note;
-    else if (!strcmp((padef + i)->at_name, ATTR_NODE_mom_port))
+    else if (i == ND_ATR_mom_port)
       atemp[i].at_val.at_long  = pnode->nd_mom_port;
-    else if (!strcmp((padef + i)->at_name, ATTR_NODE_mom_rm_port))
+    else if (i == ND_ATR_mom_rm_port)
       atemp[i].at_val.at_long  = pnode->nd_mom_rm_port;
     /* skip NUMA attributes */
-    else if (!strcmp((padef + i)->at_name, ATTR_NODE_num_node_boards))
+    else if (i == ND_ATR_num_node_boards)
       continue;
-    else if (!strcmp((padef + i)->at_name, ATTR_NODE_numa_str))
+    else if (i == ND_ATR_numa_str)
       continue;
-    else if (!strcmp((padef + i)->at_name, ATTR_NODE_gpus_str))
+    else if (i == ND_ATR_gpus_str)
       continue;
-    else if (!strcmp((padef + i)->at_name, ATTR_NODE_gpustatus))
+    else if (i == ND_ATR_gpustatus)
       atemp[i].at_val.at_arst = pnode->nd_gpustatus;
-    else if (!strcmp((padef + i)->at_name, ATTR_NODE_gpus))
+    else if (i == ND_ATR_gpus)
       {
+      if (pnode->nd_ngpus == 0)
+        continue;
+
       atemp[i].at_val.at_long  = pnode->nd_ngpus;
       }
+    else if (!strcmp((padef + i)->at_name, ATTR_NODE_mics))
+      {
+      if (pnode->nd_nmics == 0)
+        continue;
+
+      atemp[i].at_val.at_long  = pnode->nd_nmics;
+      }
+    else if (!strcmp((padef + i)->at_name, ATTR_NODE_micstatus))
+      atemp[i].at_val.at_arst = pnode->nd_micstatus;
     else
       {
       /*we don't ever expect this*/
@@ -656,6 +666,9 @@ int status_nodeattrib(
           rc = login_encode_jobs(pnode, phead);
         else
           {
+          if (index == ND_ATR_status)
+            atemp[index].at_val.at_arst = pnode->nd_status;
+
           rc = ((padef + index)->at_encode(
                 &atemp[index],
                 phead,
@@ -694,6 +707,9 @@ int status_nodeattrib(
       else if (((padef + index)->at_flags & priv) &&
                !((padef + index)->at_flags & ATR_DFLAG_NOSTAT))
         {
+        if (index == ND_ATR_status)
+          atemp[index].at_val.at_arst = pnode->nd_status;
+
         rc = (padef + index)->at_encode(
                &atemp[index],
                phead,
@@ -913,16 +929,19 @@ static int process_host_name_part(
   int                 rc = PBSE_NONE;
   ulong              *tmp = NULL;
 
-  len = strlen(objname);
+  len = (objname==NULL)?0:strlen(objname);
 
   if (len == 0)
     {
     return(PBSE_UNKNODE);
     }
 
+  if (pul == NULL)
+    return(PBSE_BAD_PARAMETER);
+
   phostname = strdup(objname);
 
-  if ((phostname == NULL) || (pul == NULL))
+  if (phostname == NULL)
     {
     return(PBSE_SYSTEM);
     }
@@ -930,12 +949,6 @@ static int process_host_name_part(
   *ntype = NTYPE_CLUSTER;
 
   *pul = NULL;
-
-  if ((len >= 3) && !strcmp(&phostname[len - 3], ":ts"))
-    {
-    phostname[len - 3] = '\0';
-    *ntype = NTYPE_TIMESHARED;
-    }
 
   if (getaddrinfo(phostname, NULL, &hints, &addr_info) != 0)
     {
@@ -1074,6 +1087,7 @@ static int process_host_name_part(
         phostname = NULL;
         }
       }
+
     *pul = tmp;
     
     for (addr_iter = addr_info; addr_iter != NULL; addr_iter = addr_iter->ai_next)
@@ -1159,9 +1173,6 @@ int update_nodes_file(
     {
     /* ... write its name, and if time-shared, append :ts */
     fprintf(nin, "%s", np->nd_name); /* write name */
-
-    if (np->nd_ntype == NTYPE_TIMESHARED)
-      fprintf(nin, ":ts");
 
     /* if number of subnodes is gt 1, write that; if only one,   */
     /* don't write to maintain compatability with old style file */
@@ -1259,7 +1270,6 @@ void recompute_ntype_cnts(void)
 
   {
   int              svr_loc_clnodes = 0;
-  int              svr_loc_tsnodes = 0;
 
   struct pbsnode  *pnode = NULL;
 
@@ -1272,15 +1282,10 @@ void recompute_ntype_cnts(void)
     while ((pnode = next_node(&allnodes, pnode, &iter)) != NULL)
       {
       /* count normally */
-      if (pnode->nd_ntype == NTYPE_CLUSTER)
-        svr_loc_clnodes += pnode->nd_nsn;
-      else if (pnode->nd_ntype == NTYPE_TIMESHARED)
-        svr_loc_tsnodes++;
+      svr_loc_clnodes += pnode->nd_nsn;
       }
 
     svr_clnodes = svr_loc_clnodes;
-
-    svr_tsnodes = svr_loc_tsnodes;
     }
   } /* END recompute_ntype_cnts() */
 
@@ -1296,10 +1301,9 @@ void recompute_ntype_cnts(void)
 
 struct prop *init_prop(
 
-        char *pname) /* I */
+  char *pname) /* I */
 
   {
-
   struct prop *pp;
 
   if ((pp = (struct prop *)calloc(1, sizeof(struct prop))) != NULL)
@@ -1344,8 +1348,8 @@ struct pbssubn *create_subnode(
   psubn->index = pnode->nd_nsn++;
   pnode->nd_nsnfree++;
 
-  if ((pnode->nd_state & (INUSE_JOB | INUSE_JOBSHARE)) != 0)
-    pnode->nd_state &= ~(INUSE_JOB|INUSE_JOBSHARE);
+  if ((pnode->nd_state & INUSE_JOB) != 0)
+    pnode->nd_state &= ~INUSE_JOB;
 
   if (pnode->nd_psn == NULL)
     pnode->nd_psn = psubn;
@@ -1435,6 +1439,8 @@ int copy_properties(
   /* copy features/properties */
   if (src->nd_prop == NULL)
     return(PBSE_NONE);
+  else if (dest->nd_first == NULL)
+    return(PBSE_BAD_PARAMETER);
 
   main_node = src->nd_prop;
  
@@ -1584,9 +1590,11 @@ int setup_node_boards(
       return(PBSE_SYSTEM);
       }
 
-    rc = initialize_pbsnode(pn,allocd_name,pul,NTYPE_CLUSTER);
-    if (rc != PBSE_NONE)
+    if ((rc = initialize_pbsnode(pn, allocd_name, pul, NTYPE_CLUSTER)) != PBSE_NONE)
+      {
+      free(pn);
       return(rc);
+      }
 
     /* make sure the server communicates on the correct ports */
     pn->nd_mom_port = pnode->nd_mom_port;
@@ -1603,6 +1611,7 @@ int setup_node_boards(
       if (create_subnode(pn) == NULL)
         {
         /* ERROR */
+        free(pn);
         return(PBSE_SYSTEM);
         }
       }
@@ -1613,6 +1622,7 @@ int setup_node_boards(
       if (create_a_gpusubnode(pn) != PBSE_NONE)
         {
         /* ERROR */
+        free(pn);
         return(PBSE_SYSTEM);
         }
       }
@@ -1621,7 +1631,7 @@ int setup_node_boards(
     if (gp_ptr != NULL)
       read_val_and_advance(&gpus,&gp_ptr);
 
-    copy_properties(pn,pnode);
+    copy_properties(pn, pnode);
 
     /* add the node to the private tree */
     pnode->node_boards = AVL_insert(i,
@@ -1645,6 +1655,8 @@ int setup_node_boards(
 
   return(PBSE_NONE);
   } /* END setup_node_boards() */
+
+
 
 
 /* recheck_for_node :
@@ -1710,7 +1722,7 @@ int create_pbs_node(
 
   int              ntype; /* node type; time-shared, not */
   char            *pname; /* node name w/o any :ts       */
-  u_long          *pul;  /* 0 terminated host adrs array*/
+  u_long          *pul = NULL;  /* 0 terminated host adrs array*/
   int              rc;
   node_info        *host_info;
   int              i;
@@ -1744,6 +1756,9 @@ int create_pbs_node(
       if (pattrl == NULL)
         {
         log_err(-1, __func__, "cannot create node attribute");
+        free(host_info);
+        if (pul != NULL)
+          free(pul);
         return(PBSE_MEM_MALLOC);
         }
 
@@ -1764,6 +1779,8 @@ int create_pbs_node(
       if (host_info->nodename == NULL)
         {
         free(host_info);
+        if (pul != NULL)
+          free(pul);
         log_err(-1, __func__, "create_pbs_node calloc failed");
         return(PBSE_MEM_MALLOC);
         }
@@ -1771,8 +1788,10 @@ int create_pbs_node(
       strcpy(host_info->nodename, objname);
       }
 
-    /* does anyone know why that comment is there? --dbeer */
-    set_task(WORK_Timed, time_now + 30 /*PBS_LOG_CHECK_RATE  five minutes */, recheck_for_node, host_info, FALSE);
+    set_task(WORK_Timed, time_now + 30, recheck_for_node, host_info, FALSE);
+
+    if (pul != NULL)
+      free(pul);
 
     return(rc);
     }
@@ -1809,13 +1828,20 @@ int create_pbs_node(
     }
 
   if ((rc = initialize_pbsnode(pnode, pname, pul, ntype)) != PBSE_NONE)
+    {
+    free(pul);
+    free(pname);
+    free(pnode);
+
     return(rc);
+    }
 
   /* create and initialize the first subnode to go with the parent node */
   if (create_subnode(pnode) == NULL)
     {
     free(pul);
     free(pname);
+    free(pnode);
 
     return(PBSE_SYSTEM);
     }
@@ -1870,7 +1896,6 @@ int create_pbs_node(
   /* SUCCESS */
   return(PBSE_NONE);
   } /* End create_pbs_node() */
-
 
 
 
@@ -1951,7 +1976,6 @@ static char *parse_node_token(
 
 
 
-
 /*
  * Read the file, "nodes", containing the list of properties for each node.
  * The list of nodes is formed and stored in allnodes.
@@ -2004,8 +2028,8 @@ int setup_nodes(void)
   if ((nin = fopen(path_nodes, "r")) == NULL)
     {
     snprintf(log_buf, LOCAL_LOG_BUF_SIZE,
-        "cannot open node description file '%s' in setup_nodes()\n",
-        path_nodes);
+      "cannot open node description file '%s' in setup_nodes()\n",
+      path_nodes);
 
     log_event(PBSEVENT_ADMIN,PBS_EVENTCLASS_SERVER,server_name,log_buf);
 
@@ -2019,30 +2043,34 @@ int setup_nodes(void)
   get_svr_attr_l(SRV_ATR_CrayEnabled, &cray_enabled);
 
   /* clear out line so we don't have residual data if there is no LF */
+  memset(line, 0, sizeof(line));
 
-  memset(line, '\0', sizeof(line));
-
-  for (linenum = 1;fgets(line, sizeof(line), nin);linenum++)
+  for (linenum = 1; fgets(line, sizeof(line) - 1, nin); linenum++)
     {
     if (line[0] == '#') /* comment */
+      {
+      memset(line, 0, sizeof(line));
       continue;
+      }
 
     is_alps_reporter = FALSE;
     is_alps_starter = FALSE;
 
     /* first token is the node name, may have ":ts" appended */
-
     propstr[0] = '\0';
 
     token = parse_node_token(line, 1, 0, &err, &xchar);
 
     if (token == NULL)
+      {
+      memset(line, 0, sizeof(line));
       continue; /* blank line */
+      }
 
     if (err != 0)
       {
       snprintf(log_buf, LOCAL_LOG_BUF_SIZE,
-          "invalid character in token \"%s\" on line %d", token, linenum);
+        "invalid character in token \"%s\" on line %d", token, linenum);
 
       goto errtoken2;
       }
@@ -2050,7 +2078,7 @@ int setup_nodes(void)
     if (!isalpha((int)*token))
       {
       snprintf(log_buf, LOCAL_LOG_BUF_SIZE,
-          "token \"%s\" doesn't start with alpha on line %d", token, linenum);
+        "token \"%s\" doesn't start with alpha on line %d", token, linenum);
 
       goto errtoken2;
       }
@@ -2059,7 +2087,6 @@ int setup_nodes(void)
 
     /* now process remaining tokens (if any), they may be either */
     /* attributes (keyword=value) or old style properties        */
-
     while (1)
       {
       token = parse_node_token(NULL, 0, 0, &err, &xchar);
@@ -2073,7 +2100,6 @@ int setup_nodes(void)
       if (xchar == '=')
         {
         /* have new style pbs_attribute, keyword=value */
-
         val = parse_node_token(NULL, 0, 1, &err, &xchar);
 
         if ((val == NULL) || (err != 0) || (xchar == '='))
@@ -2120,7 +2146,6 @@ int setup_nodes(void)
       }    /* END while(1) */
 
     /* if any properties, create property attr and add to list */
-
     if (propstr[0] != '\0')
       {
       pal = attrlist_create(ATTR_NODE_properties, 0, strlen(propstr) + 1);
@@ -2143,7 +2168,6 @@ int setup_nodes(void)
       }
 
     /* now create node and subnodes */
-
     pal = GET_NEXT(atrlist);
 
     if ((open_bracket = strchr(nodename,'[')) != NULL)
@@ -2233,6 +2257,8 @@ int setup_nodes(void)
       log_record(PBSEVENT_SCHED, PBS_EVENTCLASS_REQUEST, __func__, log_buf);
 
       free_attrlist(&atrlist);
+      memset(line, 0, sizeof(line));
+
       continue;
       }
 
@@ -2264,6 +2290,8 @@ int setup_nodes(void)
       }
 
     free_attrlist(&atrlist);
+
+    memset(line, 0, sizeof(line));
     }  /* END for (linenum) */
 
   if (cray_enabled == TRUE)
@@ -2274,6 +2302,7 @@ int setup_nodes(void)
         "pbs_server is Cray enabled but no login nodes are configured. Jobs cannot run. Exiting");
       log_err(-1, __func__, log_buf);
 
+      fclose(nin);
       return(-1);
       }
     }
@@ -2297,7 +2326,7 @@ int setup_nodes(void)
           np->nd_state = num | INUSE_NEEDS_HELLO_PING;
 
           /* exclusive bits are calculated later in set_old_nodes() */
-          np->nd_state &= ~(INUSE_JOB | INUSE_JOBSHARE);
+          np->nd_state &= ~INUSE_JOB;
 
           unlock_node(np, __func__, "match", LOGLEVEL);
 
@@ -2401,7 +2430,7 @@ static void delete_a_subnode(
    * and the real node is overwritten by the copy
    */
 
-  if ((psubn->inuse & (INUSE_JOB | INUSE_JOBSHARE)) == 0)
+  if ((psubn->inuse & INUSE_JOB) == 0)
     pnode->nd_nsnfree--;
 
   subnode_delete(psubn);
@@ -2452,7 +2481,7 @@ static void delete_a_gpusubnode(
 
 int node_np_action(
     
-  pbs_attribute *new,     /* derive props into this pbs_attribute*/
+  pbs_attribute *new_attr,     /* derive props into this pbs_attribute*/
   void          *pobj,    /* pointer to a pbsnode struct     */
   int            actmode) /* action mode; "NEW" or "ALTER"   */
   
@@ -2465,12 +2494,12 @@ int node_np_action(
     {
 
     case ATR_ACTION_NEW:
-      new->at_val.at_long = pnode->nd_nsn;
+      new_attr->at_val.at_long = pnode->nd_nsn;
       break;
 
     case ATR_ACTION_ALTER:
       old_np = pnode->nd_nsn;
-      new_np = (short)new->at_val.at_long;
+      new_np = (short)new_attr->at_val.at_long;
 
       if (new_np <= 0)
         return PBSE_BADATVAL;
@@ -2505,7 +2534,7 @@ int node_np_action(
 
 int node_mom_port_action(
 
-  pbs_attribute *new,     /*derive props into this pbs_attribute*/
+  pbs_attribute *new_attr,     /*derive props into this pbs_attribute*/
   void          *pobj,    /*pointer to a pbsnode struct     */
   int            actmode) /*action mode; "NEW" or "ALTER"   */
 
@@ -2517,11 +2546,11 @@ int node_mom_port_action(
     {
 
     case ATR_ACTION_NEW:
-      new->at_val.at_long = pnode->nd_mom_port;
+      new_attr->at_val.at_long = pnode->nd_mom_port;
       break;
 
     case ATR_ACTION_ALTER:
-      pnode->nd_mom_port = new->at_val.at_long;
+      pnode->nd_mom_port = new_attr->at_val.at_long;
       break;
 
     default:
@@ -2538,7 +2567,7 @@ int node_mom_port_action(
 
 int node_mom_rm_port_action(
 
-  pbs_attribute *new,     /* derive props into this pbs_attribute*/
+  pbs_attribute *new_attr,     /* derive props into this pbs_attribute*/
   void          *pobj,    /* pointer to a pbsnode struct     */
   int            actmode) /* action mode; "NEW" or "ALTER"   */
 
@@ -2550,11 +2579,11 @@ int node_mom_rm_port_action(
     {
 
     case ATR_ACTION_NEW:
-      new->at_val.at_long = pnode->nd_mom_rm_port;
+      new_attr->at_val.at_long = pnode->nd_mom_rm_port;
       break;
 
     case ATR_ACTION_ALTER:
-      pnode->nd_mom_rm_port = new->at_val.at_long;
+      pnode->nd_mom_rm_port = new_attr->at_val.at_long;
       break;
 
     default:
@@ -2569,7 +2598,7 @@ int node_mom_rm_port_action(
 
 int node_gpus_action(
 
-  pbs_attribute *new,
+  pbs_attribute *new_attr,
   void          *pnode,
   int            actmode)
 
@@ -2582,12 +2611,12 @@ int node_gpus_action(
   switch (actmode)
     {
     case ATR_ACTION_NEW:
-      new->at_val.at_long = np->nd_ngpus;
+      new_attr->at_val.at_long = np->nd_ngpus;
       break;
 
     case ATR_ACTION_ALTER:
       old_gp = np->nd_ngpus;
-      new_gp = new->at_val.at_long;
+      new_gp = new_attr->at_val.at_long;
 
       if (new_gp <= 0)
         return PBSE_BADATVAL;
@@ -2619,9 +2648,71 @@ int node_gpus_action(
 
 
 
+int node_mics_action(
+
+  pbs_attribute *new_attr,
+  void          *pnode,
+  int            actmode)
+
+  {
+  struct pbsnode *np = (struct pbsnode *)pnode;
+  int             old_mics;
+  int             new_mics;
+  int             rc = 0;
+
+  switch (actmode)
+    {
+    case ATR_ACTION_NEW:
+
+      new_attr->at_val.at_long = np->nd_nmics;
+
+      break;
+
+    case ATR_ACTION_ALTER:
+
+      old_mics = np->nd_nmics;
+      new_mics = new_attr->at_val.at_long;
+
+      if (new_mics <= 0)
+        return(PBSE_BADATVAL);
+
+      np->nd_nmics = new_mics;
+
+      if (new_mics > old_mics)
+        {
+        np->nd_nmics_free += new_mics - old_mics;
+        np->nd_nmics = new_mics;
+
+        if (new_mics > np->nd_nmics_alloced)
+          {
+          struct jobinfo *tmp = calloc(new_mics, sizeof(struct jobinfo));
+
+          if (tmp == NULL)
+            return(ENOMEM);
+
+          memcpy(tmp, np->nd_micjobs, sizeof(struct jobinfo) * np->nd_nmics_alloced);
+          free(np->nd_micjobs);
+          np->nd_micjobs = tmp;
+
+          np->nd_nmics_alloced = new_mics;
+          }
+        }
+
+      break;
+
+    default:
+      rc = PBSE_INTERNAL;
+    }
+
+  return(rc);
+  } /* END node_mics_action() */
+
+
+
+
 int node_numa_action(
 
-  pbs_attribute *new,     /* derive status into this pbs_attribute*/
+  pbs_attribute *new_attr,     /* derive status into this pbs_attribute*/
   void          *pnode,   /* pointer to a pbsnode struct     */
   int            actmode) /* action mode; "NEW" or "ALTER"   */
 
@@ -2633,11 +2724,11 @@ int node_numa_action(
   switch (actmode)
     {
     case ATR_ACTION_NEW:
-      new->at_val.at_long = np->num_node_boards;
+      new_attr->at_val.at_long = np->num_node_boards;
       break;
 
     case ATR_ACTION_ALTER:
-      np->num_node_boards = new->at_val.at_long;
+      np->num_node_boards = new_attr->at_val.at_long;
       break;
 
     default:
@@ -2652,7 +2743,7 @@ int node_numa_action(
 
 int numa_str_action(
 
-  pbs_attribute *new,     /* derive status into this pbs_attribute*/
+  pbs_attribute *new_attr,     /* derive status into this pbs_attribute*/
   void          *pnode,   /* pointer to a pbsnode struct     */
   int            actmode) /* action mode; "NEW" or "ALTER"   */
 
@@ -2667,29 +2758,29 @@ int numa_str_action(
       if (np->numa_str != NULL)
         {
         len = strlen(np->numa_str) + 1;
-        new->at_val.at_str = (char *)calloc(len, sizeof(char));
+        new_attr->at_val.at_str = (char *)calloc(len, sizeof(char));
 
-        if (new->at_val.at_str == NULL)
+        if (new_attr->at_val.at_str == NULL)
           return(PBSE_SYSTEM);
 
-        strcpy(new->at_val.at_str,np->numa_str);
+        strcpy(new_attr->at_val.at_str,np->numa_str);
         }
       else
-        new->at_val.at_str = NULL;
+        new_attr->at_val.at_str = NULL;
 
       break;
 
     case ATR_ACTION_ALTER:
 
-      if (new->at_val.at_str != NULL)
+      if (new_attr->at_val.at_str != NULL)
         {
-        len = strlen(new->at_val.at_str) + 1;
+        len = strlen(new_attr->at_val.at_str) + 1;
         np->numa_str = (char *)calloc(len, sizeof(char));
 
         if (np->numa_str == NULL)
           return(PBSE_SYSTEM);
 
-        strcpy(np->numa_str,new->at_val.at_str);
+        strcpy(np->numa_str,new_attr->at_val.at_str);
         }
       else
         np->numa_str = NULL;
@@ -2708,7 +2799,7 @@ int numa_str_action(
 
 int gpu_str_action(
 
-  pbs_attribute *new,
+  pbs_attribute *new_attr,
   void          *pnode,
   int            actmode)
 
@@ -2723,29 +2814,29 @@ int gpu_str_action(
       if (np->gpu_str != NULL)
         {
         len = strlen(np->gpu_str) + 1;
-        new->at_val.at_str = (char *)calloc(len, sizeof(char));
+        new_attr->at_val.at_str = (char *)calloc(len, sizeof(char));
 
-        if (new->at_val.at_str == NULL)
+        if (new_attr->at_val.at_str == NULL)
           return(PBSE_SYSTEM);
 
-        strcpy(new->at_val.at_str,np->gpu_str);
+        strcpy(new_attr->at_val.at_str,np->gpu_str);
         }
       else
-        new->at_val.at_str = NULL;
+        new_attr->at_val.at_str = NULL;
 
       break;
 
     case ATR_ACTION_ALTER:
 
-      if (new->at_val.at_str != NULL)
+      if (new_attr->at_val.at_str != NULL)
         {
-        len = strlen(new->at_val.at_str) + 1;
+        len = strlen(new_attr->at_val.at_str) + 1;
         np->gpu_str = (char *)calloc(len, sizeof(char));
 
         if (np->gpu_str == NULL)
           return(PBSE_SYSTEM);
 
-        strcpy(np->gpu_str,new->at_val.at_str);
+        strcpy(np->gpu_str,new_attr->at_val.at_str);
         }
       else
         np->gpu_str = NULL;
@@ -3304,7 +3395,7 @@ int send_hierarchy(
         }
       }
 
-    diswst(chan, IS_EOL_MESSAGE);
+    ret = diswst(chan, IS_EOL_MESSAGE);
 
     DIS_tcp_wflush(chan);
     }

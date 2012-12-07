@@ -26,7 +26,7 @@ int depend_on_que(pbs_attribute *pattr, void *pjob, int mode);
 
 int depend_on_exec(job *pjob);
 
-int depend_on_term(job *pjob);
+int depend_on_term(char *job_id);
 
 /* static void release_cheapest(job *pjob, struct depend *pdep); */
 
@@ -49,8 +49,6 @@ void depend_clrrdy(job *pjob);
 /* static struct depend_job *find_dependjob(struct depend *pdep, char *name); */
 
 /* static struct depend_job *make_dependjob(struct depend *pdep, char *jobid, char *host); */
-
-/* static int send_depend_req(job *pjob, struct depend_job *pparent, int type, int op, int schedhint, void (*postfunc)(struct work_task *)) */
 
 int decode_depend(pbs_attribute *patr, char *name, char *rescn, char *val, int perm);
 

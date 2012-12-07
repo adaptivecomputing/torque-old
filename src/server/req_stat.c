@@ -121,13 +121,13 @@
 #include "alps_functions.h"
 #include "node_manager.h" /* tfind_addr */
 #include "ji_mutex.h"
+#include "unistd.h"
 
 /* Global Data Items: */
 
 extern struct all_jobs alljobs;
 extern struct all_jobs array_summary;
 extern struct server   server;
-extern all_queues      svr_queues;
 extern char            server_name[];
 extern attribute_def   svr_attr_def[];
 extern attribute_def   que_attr_def[];
@@ -139,6 +139,10 @@ extern char       *msg_init_norerun;
 extern int             LOGLEVEL;
 
 extern pthread_mutex_t *netrates_mutex;
+
+pthread_mutex_t  *poll_job_task_mutex;
+int              max_poll_job_tasks;
+int              current_poll_job_tasks = 0;
 
 /* Extern Functions */
 
@@ -201,6 +205,7 @@ int req_stat_job(
   pbs_queue            *pque = NULL;
   int                   rc = PBSE_NONE;
   long                  poll_jobs = 0;
+  char                  log_buf[LOCAL_LOG_BUF_SIZE];
 
   enum TJobStatTypeEnum type = tjstNONE;
 
@@ -208,6 +213,12 @@ int req_stat_job(
    * first, validate the name of the requested object, either
    * a job, a queue, or the whole server.
    */
+  if (LOGLEVEL >= 7)
+    {
+    sprintf(log_buf, "note");
+    LOG_EVENT(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, __func__, log_buf);
+    }
+
 
   /* FORMAT:  name = { <JOBID> | <QUEUEID> | '' } */
 
@@ -240,8 +251,6 @@ int req_stat_job(
         {
         type = tjstArray;
         }
-      
-      pjob = find_array_template(name);
       }
     else
       {
@@ -251,10 +260,9 @@ int req_stat_job(
         {
         rc = PBSE_UNKJOBID;
         }
+      else
+        unlock_ji_mutex(pjob, __func__, "1", LOGLEVEL);
       }
-   
-    if (pjob != NULL)
-      unlock_ji_mutex(pjob, __func__, "1", LOGLEVEL);
     }
   else if (isalpha(name[0]))
     {
@@ -286,9 +294,6 @@ int req_stat_job(
   if (rc != 0)
     {
     /* is invalid - an error */
-    if (pque != NULL) 
-      unlock_queue(pque, "req_stat_job", "invalid", LOGLEVEL);
-
     req_reject(rc, 0, preq, NULL, NULL);
 
     return(rc);
@@ -433,7 +438,8 @@ static void req_stat_job_step2(
   if (type == tjstArray)
     {
     pa = get_array(preq->rq_ind.rq_status.rq_id);
-    if(pa == NULL)
+
+    if (pa == NULL)
       {
       req_reject(PBSE_UNKARRAYID, 0, preq, NULL, "unable to find array");
       return;
@@ -549,14 +555,8 @@ static void req_stat_job_step2(
           continue;
           }
         
-        if (LOGLEVEL >= 7)
-          {
-          sprintf(log_buf, "%s: unlocked ai_mutex", __func__);
-          log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, pjob->ji_qs.ji_jobid, log_buf);
-          }
-
         if (pa != NULL)
-          pthread_mutex_unlock(pa->ai_mutex);
+          unlock_ai_mutex(pa, __func__, "1", LOGLEVEL);
 
         return; /* will pick up after mom replies */
         }
@@ -565,12 +565,7 @@ static void req_stat_job_step2(
     if (rc != 0)
       {
       if (pa != NULL)
-        pthread_mutex_unlock(pa->ai_mutex);
-        if(LOGLEVEL >= 7)
-          {
-          sprintf(log_buf, "%s: unlocked ai_mutex", __func__);
-          log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, pjob->ji_qs.ji_jobid, log_buf);
-          }
+        unlock_ai_mutex(pa, __func__, "2", LOGLEVEL);
 
       reply_free(preply);
 
@@ -585,9 +580,11 @@ static void req_stat_job_step2(
    * loop through again
    */
 
-  if (type == tjstSummarizeArraysQueue || type == tjstSummarizeArraysServer)
+  if ((type == tjstSummarizeArraysQueue) || 
+      (type == tjstSummarizeArraysServer))
     {
-    update_array_statuses(pa);
+    /* No array can be owned for these options */
+    update_array_statuses();
     }
 
   if (type == tjstJob)
@@ -604,7 +601,7 @@ static void req_stat_job_step2(
 
   else if (type == tjstArray)
     {
-    job_array_index = 0;
+    job_array_index = -1;
     pjob = NULL;
     /* increment job_array_index until we find a non-null pointer or hit the end */
     while (++job_array_index < pa->ai_qs.array_size)
@@ -660,7 +657,7 @@ static void req_stat_job_step2(
           (pque->qu_qs.qu_type != QTYPE_Execution))
         {
         /* ignore routing queues */
-        unlock_queue(pque, "req_stat_job_step2", "ignore queue", LOGLEVEL);
+        unlock_queue(pque, __func__, "ignore queue", LOGLEVEL);
         continue;
         }
 
@@ -717,15 +714,10 @@ static void req_stat_job_step2(
 
           if (pa != NULL)
             {
-            pthread_mutex_unlock(pa->ai_mutex);
-            if(LOGLEVEL >= 7)
-              {
-              sprintf(log_buf, "%s: unlocked ai_mutex", __func__);
-              log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, pjob->ji_qs.ji_jobid, log_buf);
-              }
+            unlock_ai_mutex(pa, __func__, "1", LOGLEVEL);
             }
           unlock_ji_mutex(pjob, __func__, "7", LOGLEVEL);
-          unlock_queue(pque, "req_stat_job_step2", "perm", LOGLEVEL);
+          unlock_queue(pque, __func__, "perm", LOGLEVEL);
           return;
           }
 
@@ -749,14 +741,8 @@ static void req_stat_job_step2(
       unlock_queue(pque, __func__, "end while", LOGLEVEL);
       }      /* END for (pque) */
       
-    if (LOGLEVEL >= 7)
-      {
-      sprintf(log_buf, "%s: unlocked ai_mutex", __func__);
-      log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, pa->ai_qs.parent_id, log_buf);
-      }
-
     if (pa != NULL)
-      pthread_mutex_unlock(pa->ai_mutex);
+      unlock_ai_mutex(pa, __func__, "1", LOGLEVEL);
 
     reply_send_svr(preq);
 
@@ -776,7 +762,11 @@ static void req_stat_job_step2(
         }
       else
         {
+        if (pa != NULL)
+          pthread_mutex_unlock(pa->ai_mutex);
         pque = get_jobs_queue(&pjob);
+        if (pa != NULL)
+          pthread_mutex_lock(pa->ai_mutex);
 
         if ((pjob == NULL) ||
             (pque == NULL))
@@ -784,12 +774,12 @@ static void req_stat_job_step2(
         
         if (pque->qu_qs.qu_type != QTYPE_Execution)
           {
-          unlock_queue(pque, "req_stat_job_step2", "not exec", LOGLEVEL);
+          unlock_queue(pque, __func__, "not exec", LOGLEVEL);
         
           goto nextjob;
           }
 
-        unlock_queue(pque, "req_stat_job_step2", "exec", LOGLEVEL);
+        unlock_queue(pque, __func__, "exec", LOGLEVEL);
         }
       }
 
@@ -807,12 +797,7 @@ static void req_stat_job_step2(
       {
       if (pa != NULL)
         {
-        pthread_mutex_unlock(pa->ai_mutex);
-        if (LOGLEVEL >= 7)
-          {
-          sprintf(log_buf, "%s: unlocked ai_mutex", __func__);
-          log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, pjob->ji_qs.ji_jobid, log_buf);
-          }
+        unlock_ai_mutex(pa, __func__, "1", LOGLEVEL);
         }
       unlock_ji_mutex(pjob, __func__, "9", LOGLEVEL);
 
@@ -860,12 +845,7 @@ nextjob:
 
   if (pa != NULL)
     {
-    if (LOGLEVEL >= 7)
-      {
-      sprintf(log_buf, "%s: unlocked ai_mutex", __func__);
-      log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, pa->ai_qs.parent_id, log_buf);
-      }
-    pthread_mutex_unlock(pa->ai_mutex);
+    unlock_ai_mutex(pa, __func__, "1", LOGLEVEL);
     }
  
   reply_send_svr(preq);
@@ -969,16 +949,14 @@ int stat_to_mom(
   /* Unlock job here */
   if (handle >= 0)
     {
-    if ((rc = issue_Drequest(handle, newrq, NULL, NULL)) != PBSE_NONE)
-      {
-      }
-    else
+    if ((rc = issue_Drequest(handle, newrq)) == PBSE_NONE)
       {
       stat_update(newrq, cntl);
       }
     }
   else
     rc = PBSE_CONNECT;
+
   if (rc == PBSE_SYSTEM)
     rc = PBSE_MEM_MALLOC;
 
@@ -1035,8 +1013,6 @@ void stat_update(
           /* must save session id    */
 
           job_save(pjob, SAVEJOB_FULL, 0);
-
-          svr_mailowner(pjob, MAIL_BEGIN, MAIL_NORMAL, NULL);
           }
 
 #ifdef USESAVEDRESOURCES
@@ -1101,7 +1077,9 @@ void stat_update(
  */
 
 void stat_mom_job(
-    char *job_id)
+
+  char *job_id)
+
   {
   struct stat_cntl *cntl;
 
@@ -1133,7 +1111,7 @@ void stat_mom_job(
 
 
 /**
- * poll_job_task
+ * poll _job_task
  *
  * The invocation of this routine is triggered from
  * the pbs_server main_loop code.  The check of
@@ -1161,7 +1139,22 @@ void poll_job_task(
       get_svr_attr_l(SRV_ATR_PollJobs, &poll_jobs);
       if ((poll_jobs) && (job_state == JOB_STATE_RUNNING))
         {
-        stat_mom_job(job_id);
+        /* we need to throttle the number of outstanding threads are
+           doing job polling. This prevents a problem where pbs_server
+           gets hung waiting on I/O from the mom */
+        pthread_mutex_lock(poll_job_task_mutex);
+        if (current_poll_job_tasks < max_poll_job_tasks)
+          {
+          current_poll_job_tasks++;
+          pthread_mutex_unlock(poll_job_task_mutex);
+
+          stat_mom_job(job_id);
+
+          pthread_mutex_lock(poll_job_task_mutex);
+          current_poll_job_tasks--;
+          }
+        pthread_mutex_unlock(poll_job_task_mutex);
+
         
         /* add another task */
         set_task(WORK_Timed, time_now + JobStatRate, poll_job_task, strdup(job_id), FALSE);

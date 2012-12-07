@@ -35,8 +35,8 @@ int main(
   char job_id[PBS_MAXCLTJOBID];       /* from the command line */
 
   char job_id_out[PBS_MAXCLTJOBID];
-  char server_out[MAXSERVERNAME];
-  char rmt_server[MAXSERVERNAME];
+  char server_out[MAXSERVERNAME] = "";
+  char rmt_server[MAXSERVERNAME] = "";
 
 #define MAX_HOLD_TYPE_LEN 32
   char hold_type[MAX_HOLD_TYPE_LEN+1];
@@ -125,9 +125,9 @@ int main(
     int stat = 0;
     int located = FALSE;
 
-    strcpy(job_id, argv[optind]);
+    snprintf(job_id, sizeof(job_id), "%s", argv[optind]);
 
-    if (get_server(job_id, job_id_out, server_out))
+    if (get_server(job_id, job_id_out, sizeof(job_id_out), server_out, sizeof(server_out)))
       {
       fprintf(stderr, "qhold: illegally formed job identifier: %s\n", job_id);
       any_failed = 1;
@@ -142,7 +142,11 @@ cnt:
       {
       any_failed = -1 * connect;
 
-      fprintf(stderr, "qhold: cannot connect to server %s (errno=%d) %s\n",
+      if (server_out[0] != 0)
+        fprintf(stderr, "qhold: cannot connect to server %s (errno=%d) %s\n",
+              server_out, any_failed, pbs_strerror(any_failed));
+      else
+        fprintf(stderr, "qhold: cannot connect to server %s (errno=%d) %s\n",
               pbs_server, any_failed, pbs_strerror(any_failed));
       
       continue;

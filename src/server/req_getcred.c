@@ -176,6 +176,10 @@ int get_encode_host(
   /* Move us to the end of the ENCODE_HOST keyword. There are spaces
    	 between the : and the first letter of the host name */
   ptr = strchr(ptr, ':');
+  if(ptr == NULL)
+    {
+    return (-1);
+    }
   ptr++;
   while (*ptr == SPACE)
     {
@@ -198,14 +202,14 @@ int get_encode_host(
 
 int get_UID(
     
-  int s, 
-  char *munge_buf, 
+  int                   s, 
+  char                 *munge_buf, 
   struct batch_request *preq)
   
   {
   char *ptr;
-  char user_name[PBS_MAXHOSTNAME];
-  int i;
+  char  user_name[PBS_MAXUSER];
+  int   i = 0;
 
 
   ptr = strstr(munge_buf, "UID:");
@@ -222,9 +226,11 @@ int get_UID(
 	  ptr++;
 	  }
 
-	memset(user_name, 0, PBS_MAXHOSTNAME);
-	i = 0;
-	while (*ptr != SPACE && !isspace(*ptr))
+	memset(user_name, 0, sizeof(user_name));
+
+	while ((*ptr != SPACE) && 
+         (!isspace(*ptr)) &&
+         (i < (int)sizeof(user_name)))
 	  {
 	  user_name[i++] = *ptr;
 	  ptr++;
@@ -232,8 +238,10 @@ int get_UID(
 
 	strcpy(conn_credent[s].username, user_name);
 	
-  return(0);
-  }
+  return(PBSE_NONE);
+  } /* END get_UID() */
+
+
 
 
 int write_munge_temp_file(
@@ -371,18 +379,19 @@ int unmunge_request(
   time_t          myTime;
   struct timeval  tv;
   suseconds_t     millisecs;
-  struct tm      *timeinfo;
+  struct tm       timeinfo;
   char            mungeFileName[MAXPATHLEN + MAXNAMLEN+1];
   int             rc = PBSE_NONE;
 
   /* create a sudo random file name */
   gettimeofday(&tv, NULL);
   myTime = tv.tv_sec;
-  timeinfo = localtime(&myTime);
+  /* FIXME: use localtime_r */
+  localtime_r(&myTime, &timeinfo);
   millisecs = tv.tv_usec;
   sprintf(mungeFileName, "%smunge-%d-%d-%d-%d", 
-	  path_credentials, timeinfo->tm_hour, timeinfo->tm_min, 
-	  timeinfo->tm_sec, (int)millisecs);
+	  path_credentials, timeinfo.tm_hour, timeinfo.tm_min, 
+	  timeinfo.tm_sec, (int)millisecs);
 
   /* Write the munge credential to the newly created file */
   if ((rc = write_munge_temp_file(preq,mungeFileName)) == PBSE_NONE)

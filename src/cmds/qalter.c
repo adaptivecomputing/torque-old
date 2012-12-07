@@ -41,13 +41,13 @@ int main(
   time_t after;
   char a_value[80];
 
-  char job_id[PBS_MAXCLTJOBID];
+  char job_id[PBS_MAXCLTJOBID] = "";
 
-  char job_id_out[PBS_MAXCLTJOBID];
-  char server_out[MAXSERVERNAME];
-  char rmt_server[MAXSERVERNAME];
-  char path_out[MAXPATHLEN + 1];
-  char extend[MAXPATHLEN];
+  char job_id_out[PBS_MAXCLTJOBID] = "";
+  char server_out[MAXSERVERNAME] = "";
+  char rmt_server[MAXSERVERNAME] = "";
+  char path_out[MAXPATHLEN + 1] = "";
+  char extend[MAXPATHLEN] = "";
   char *extend_ptr = NULL; /* only give value if extend has value */
 
   initialize_network_info();
@@ -636,9 +636,9 @@ int main(
     int stat = 0;
     int located = FALSE;
 
-    strcpy(job_id, argv[optind]);
+    snprintf(job_id, sizeof(job_id), "%s", argv[optind]);
 
-    if (get_server(job_id, job_id_out, server_out))
+    if (get_server(job_id, job_id_out, sizeof(job_id_out), server_out, sizeof(server_out)))
       {
       fprintf(stderr, "qalter: illegally formed job identifier: %s\n",
               job_id);
@@ -656,7 +656,13 @@ cnt:
       {
       local_errno = -1 * connect;
 
-      fprintf(stderr, "qalter: cannot connect to server %s (errno=%d) %s\n",
+      if (server_out[0] != 0)
+        fprintf(stderr, "qalter: cannot connect to server %s (errno=%d) %s\n",
+              server_out,
+              local_errno,
+              pbs_strerror(local_errno));
+      else
+        fprintf(stderr, "qalter: cannot connect to server %s (errno=%d) %s\n",
               pbs_server,
               local_errno,
               pbs_strerror(local_errno));

@@ -42,8 +42,8 @@ unsigned availBytesOnDescriptor(
   if (ioctl(pLocalSocket, FIONREAD, &availBytes) != -1)
     return availBytes;
   perror("availBytes");
-  return 0;
-  }
+  return(0);
+  } /* END availBytesOnDescriptor() */
 
 
 
@@ -56,8 +56,11 @@ int socket_avail_bytes_on_descriptor(
   unsigned avail_bytes;
   if (ioctl(socket, FIONREAD, &avail_bytes) != -1)
     return avail_bytes;
-  return 0;
-  }
+  return(0);
+  } /* END socket_avail_bytes_on_descriptor() */
+
+
+
 
 int socket_get_tcp()
 
@@ -77,30 +80,35 @@ int socket_get_tcp()
     }
   else if (setsockopt(local_socket, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on)) == -1)
     {
+    close(local_socket);
     local_socket = -3;
     }
   else if (setsockopt(local_socket, SOL_SOCKET, SO_LINGER, &l_delay, sizeof(struct linger)) == -1)
     {
+    close(local_socket);
     local_socket = -4;
     }
   else if (setsockopt(local_socket, SOL_SOCKET, SO_KEEPALIVE, &ka_val, sizeof(int)) < 0)
     {
+    close(local_socket);
     local_socket = -5;
     }
   else if (setsockopt(local_socket, SOL_TCP, TCP_KEEPIDLE, &ka_timeout, sizeof(int)) < 0)
     {
+    close(local_socket);
     local_socket = -6;
     }
-/*  else
-    {
-    socket_read_flush(local_socket);
-    }
-    */
+
   return local_socket;
-  }
+  } /* END socket_get_tcp() */
 
 
-int get_listen_socket(struct addrinfo *addr_info)
+
+
+int get_listen_socket(
+    
+  struct addrinfo *addr_info)
+
   {
   int local_socket = 0;
   struct linger l_delay;
@@ -118,23 +126,27 @@ int get_listen_socket(struct addrinfo *addr_info)
     }
   else if (setsockopt(local_socket, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on)) == -1)
     {
+    close(local_socket);
     local_socket = -3;
     }
   else if (setsockopt(local_socket, SOL_SOCKET, SO_LINGER, &l_delay, sizeof(struct linger)) == -1)
     {
+    close(local_socket);
     local_socket = -4;
     }
   else if (setsockopt(local_socket, SOL_SOCKET, SO_KEEPALIVE, &ka_val, sizeof(int)) < 0)
     {
+    close(local_socket);
     local_socket = -5;
     }
   else if (setsockopt(local_socket, SOL_TCP, TCP_KEEPIDLE, &ka_timeout, sizeof(int)) < 0)
     {
+    close(local_socket);
     local_socket = -6;
     }
 
-    return(local_socket);
-  }
+  return(local_socket);
+  } /* END get_listen_socket() */
    
 
 
@@ -144,7 +156,7 @@ int get_random_reserved_port()
   int res_port = 0;
   res_port = (rand() % RES_PORT_RANGE) + RES_PORT_START;
   return res_port;
-  }
+  } /* END get_random_reserved_port() */
 
 
 
@@ -226,7 +238,11 @@ int socket_get_tcp_priv()
         if (++priv_port >= RES_PORT_END)
           priv_port = RES_PORT_START;
         local.sin_port = htons(priv_port);
-        if (((rc = bind(local_socket, (struct sockaddr *)&local, sizeof(struct sockaddr))) < 0) && ((rc == EADDRINUSE) || (errno = EADDRNOTAVAIL) || (errno == EINVAL) || (rc == EINPROGRESS)))
+        if (((rc = bind(local_socket, (struct sockaddr *)&local, sizeof(struct sockaddr))) < 0) &&
+            ((rc == EADDRINUSE) ||
+             (errno == EADDRNOTAVAIL) ||
+             (errno == EINVAL) ||
+             (rc == EINPROGRESS)))
           {
           cntr++;
           }
@@ -254,7 +270,9 @@ int socket_get_tcp_priv()
     local_socket = -1;
     }
   return local_socket;
-  }
+  } /* END socket_get_tcp_priv() */
+
+
 
 
 int socket_connect(
@@ -396,7 +414,7 @@ int socket_wait_for_write(
     rc = PBSE_SOCKET_WRITE;
     }
   return rc;
-  }
+  } /* END socket_wait_for_write() */
 
 
 
@@ -423,7 +441,10 @@ int socket_wait_for_xbytes(
       }
     }
   return rc;
-  }
+  } /* END socket_wait_for_xbytes() */
+
+
+
 
 int socket_wait_for_read(
     
@@ -438,36 +459,37 @@ int socket_wait_for_read(
   pfd.events = POLLIN | POLLHUP; /* | POLLRDNORM; */
   pfd.revents = 0;
 
-  while (pfd.revents == 0)
+  ret = poll(&pfd, 1, pbs_tcp_timeout * 1000); /* poll's timeout is in milliseconds */
+  if (ret > 0)
     {
-    ret = poll(&pfd, 1, pbs_tcp_timeout * 1000); /* poll's timeout is in milliseconds */
-    if (ret > 0)
+    char buf[8];
+    if (recv(socket, buf, 7, MSG_PEEK | MSG_DONTWAIT) == 0)
       {
-      char buf[8];
-      if (recv(socket, buf, 7, MSG_PEEK | MSG_DONTWAIT) == 0)
-        {
-        /* This will only occur when the socket has closed */
-        rc = PBSE_SOCKET_CLOSE;
-        break;
-        }
-      else
-        break; /* data exists */
+      /* This will only occur when the socket has closed */
+      rc = PBSE_SOCKET_CLOSE;
       }
-    else if (ret == 0)
+    }
+  else if (ret == 0)
+    {
+    /* Server timeout reached */
+    rc = PBSE_TIMEOUT;
+    }
+  else /* something bad happened to poll */
+    {
+    if (pfd.revents & POLLNVAL)
       {
-      /* Server timeout reached */
-      rc = PBSE_TIMEOUT;
-      break;
+      rc = PBSE_SOCKET_CLOSE;
       }
-    else /* something bad happened to poll */
+    else
       rc = PBSE_SOCKET_DATA;
     }
-  if (pfd.revents & POLLNVAL)
-    {
-    rc = PBSE_SOCKET_CLOSE;
-    }
-  return rc;
-  }
+
+
+  return(rc);
+  } /* END socket_wait_for_read() */
+
+
+
 
 void socket_read_flush(
     
@@ -486,7 +508,7 @@ void socket_read_flush(
     if (i < 0)
       break;
     }
-  }
+  } /* END socket_read_flush() */
 
 
 
@@ -511,7 +533,10 @@ int socket_write(
       }
     }
   return data_len_actual;
-  }
+  } /* END socket_write() */
+
+
+
 
 int socket_read_force(
 
@@ -566,7 +591,7 @@ int socket_read_force(
       }
     }
   return rc;
-  }
+  } /* END socket_read_force() */
 
 
 
@@ -578,7 +603,7 @@ int socket_read(
   long long  *str_len)
 
   {
-  int rc = PBSE_NONE;
+  int       rc = PBSE_NONE;
   long long avail_bytes = socket_avail_bytes_on_descriptor(socket);
   long long byte_count = 0;
 
@@ -596,6 +621,7 @@ int socket_read(
       break;
       }
     }
+
   if (rc != PBSE_NONE)
     {
     }
@@ -615,10 +641,18 @@ int socket_read(
             avail_bytes, byte_count);
     *str_len = byte_count;
     }
-  return rc;
-  }
 
-int socket_read_one_byte(int socket, char *one_char)
+  return(rc);
+  } /* END socket_read() */
+
+
+
+
+int socket_read_one_byte(
+    
+  int   socket,
+  char *one_char)
+
   {
   int rc = PBSE_NONE;
   int avail_bytes = socket_avail_bytes_on_descriptor(socket);
@@ -632,16 +666,25 @@ int socket_read_one_byte(int socket, char *one_char)
       rc = PBSE_NONE;
     }
   return rc;
-  }
+  } /* END socket_read_one_byte() */
 
-int socket_read_num(int socket, long long *the_num)
+
+
+
+int socket_read_num(
+    
+  int        socket,
+  long long *the_num)
+
   {
-  int rc =  PBSE_INTERNAL;
-  int pos = 0;
+  int  rc =  PBSE_INTERNAL;
+  int  pos = 0;
   char str_ll[MAX_NUM_LEN];
   char tmp_char = '\0';
-  int avail_bytes = socket_avail_bytes_on_descriptor(socket);
+  int  avail_bytes = socket_avail_bytes_on_descriptor(socket);
+
   memset(str_ll, 0, MAX_NUM_LEN);
+
   while (1)
     {
     if (avail_bytes == 0)
@@ -658,7 +701,7 @@ int socket_read_num(int socket, long long *the_num)
       }
     else if (read(socket, &tmp_char, 1) == -1)
       break;
-    else if (pos > MAX_NUM_LEN)
+    else if (pos >= (int)sizeof(str_ll) - 1)
       break;
     else if ((tmp_char >= '0' && tmp_char <= '9') || (tmp_char == '-'))
       {
@@ -677,15 +720,25 @@ int socket_read_num(int socket, long long *the_num)
     else
       break;
     }
-  if (str_ll[0] == 0)
+
+  if (str_ll[0] == '\0')
     rc = PBSE_SOCKET_READ;
+
   return rc;
-  }
+  } /* END socket_read_num() */
+
+
+
 
 /* memory for "the_str" is allocated in inside this function.
  * "str_len" is not.
  */
-int socket_read_str(int socket, char **the_str, long long *str_len)
+int socket_read_str(
+    
+  int         socket,
+  char      **the_str,
+  long long  *str_len)
+
   {
   int rc =  PBSE_NONE;
   long long tmp_len = 0;
@@ -735,9 +788,15 @@ int socket_read_str(int socket, char **the_str, long long *str_len)
     /* SUCCESS */
     }
   return rc;
-  }
+  } /* socket_read_str() */
 
-int socket_close(int socket)
+
+
+
+int socket_close(
+    
+  int socket)
+
   {
   int rc;
   socket_read_flush(socket);
@@ -746,7 +805,7 @@ int socket_close(int socket)
   else
     rc = PBSE_SYSTEM;
   return rc;
-  }
+  } /* END socket_close() */
 
 
 
@@ -803,5 +862,5 @@ int get_addr_info(
     }
 
   return(rc);
-  }
+  } /* END get_addr_info() */
 

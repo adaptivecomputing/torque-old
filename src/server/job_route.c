@@ -114,8 +114,9 @@
 #include <memory.h>
 #endif
 #include "ji_mutex.h"
+#include "queue_func.h" /*find_queuebyname */
 
-#define ROUTE_RETRY_TIME 30
+#define ROUTE_RETRY_TIME 10
 
 /* External functions called */
 int svr_movejob(job *, char *, int *, struct batch_request *, int);
@@ -124,13 +125,14 @@ long count_proc(char *spec);
 /* Local Functions */
 
 int  job_route(job *);
-void queue_route(pbs_queue *);
+void *queue_route(void *);
 
 /* Global Data */
 extern char *msg_routexceed;
 extern char *msg_err_malloc;
 extern char *msg_err_noqueue;
 extern int LOGLEVEL;
+extern pthread_mutex_t *reroute_job_mutex;
 
 /*
  * Add an entry to the list of bad destinations for a job.
@@ -197,161 +199,6 @@ badplace *is_bad_dest(
   }  /* END is_bad_dest() */
 
 
-/* int initialize_procct - set pjob->procct plus the resource
- * procct in the Resource_List
- *  
- * Assumes the nodes resource has been set on the Resource_List. This should 
- * have been done in req_quejob with the set_nodes_attr() function or in 
- * set_node_ct and/or set_proc_ct. 
- *  
- * Returns 0 on success. Non-zero on failure
- */ 
-int initialize_procct(
-    
-  job *pjob)
-
-  { 
-  resource      *pnodesp = NULL;
-  resource_def  *pnodes_def = NULL;
-  resource      *pprocsp = NULL;
-  resource_def  *pprocs_def = NULL;
-  resource      *procctp = NULL;
-  resource_def  *procct_def = NULL;
-  pbs_attribute *pattr = NULL;
-  char           log_buf[LOCAL_LOG_BUF_SIZE];
-
-  pattr = &pjob->ji_wattr[JOB_ATR_resource];
-  if (pattr == NULL)
-    {
-    /* Something is really wrong. ji_wattr[JOB_ATR_resource] should always be set
-       by the time this function is called */
-    sprintf(log_buf, "%s: Resource_List is NULL. Cannot proceed", __func__);
-    log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, pjob->ji_qs.ji_jobid, log_buf);
-
-    return(ROUTE_PERM_FAILURE);
-    }
-
-  /* Has nodes been initialzed */
-  if (pattr->at_flags & ATR_VFLAG_SET)
-    {
-    /* get the node spec from the nodes resource */
-    pnodes_def = find_resc_def(svr_resc_def, "nodes", svr_resc_size);
-    if (pnodes_def == NULL)
-      {
-      sprintf(log_buf, "%s: Could not get nodes resource definition. Cannot proceed", __func__);
-      log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, pjob->ji_qs.ji_jobid, log_buf);
-      return(ROUTE_PERM_FAILURE);
-      }
-
-    pnodesp = find_resc_entry(pattr, pnodes_def);
-
-    /* Get the procs count if the procs resource pbs_attribute is set */
-    pprocs_def = find_resc_def(svr_resc_def, "procs", svr_resc_size);
-    if (pprocs_def != NULL)
-      {
-      /* if pprocs_def is NULL we just go on. Otherwise we will get its value now */
-      pprocsp = find_resc_entry(pattr, pprocs_def);
-      /* We will evaluate pprocsp later. If it is null we do not care */
-      }
-
-    /* if neither pnodesp nor pprocsp are set, terminate */
-    if (pnodesp == NULL && pprocsp == NULL)
-      {
-      /* nodes and procs were not set. Hopefully req_quejob set procct to 1 for us already */
-      procct_def = find_resc_def(svr_resc_def, "procct", svr_resc_size);
-      if (procct_def == NULL)
-        {
-        sprintf(log_buf, "%s: Could not get procct resource definition. Cannot proceed", __func__);
-        log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, pjob->ji_qs.ji_jobid, log_buf);
-        return(ROUTE_PERM_FAILURE);
-        }
-
-      procctp = find_resc_entry(pattr, procct_def);
-      if (procctp == NULL)
-        {
-        sprintf(log_buf, "%s: Could not get nodes nor procs entry from Resource_List. Cannot proceed", __func__);
-        log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, pjob->ji_qs.ji_jobid, log_buf);
-        return(ROUTE_PERM_FAILURE);
-        }
-      }
-
-    /* we now set pjob->procct and we also set the resource pbs_attribute procct */
-    procct_def = find_resc_def(svr_resc_def, "procct", svr_resc_size);
-    if (procct_def == NULL)
-      {
-      sprintf(log_buf, "%s: Could not get procct resource definition. Cannot proceed", __func__);
-      log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, pjob->ji_qs.ji_jobid, log_buf);
-      return(ROUTE_PERM_FAILURE);
-      }
-    procctp = find_resc_entry(pattr, procct_def);
-    if (procctp == NULL)
-      {
-      procctp = add_resource_entry(pattr, procct_def);
-      if (procctp == NULL)
-        {
-        sprintf(log_buf, "%s: Could not add procct resource. Cannot proceed", __func__);
-        log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, pjob->ji_qs.ji_jobid, log_buf);
-        return(ROUTE_PERM_FAILURE);
-        }
-      }
-
-    /* Finally the moment of truth. We have the nodes and procs resources. Add them
-       to the procct resoruce*/
-    procctp->rs_value.at_val.at_long = 0;
-    if (pnodesp != NULL)
-      {
-      procctp->rs_value.at_val.at_long = count_proc(pnodesp->rs_value.at_val.at_str);
-      }
-
-    if (pprocsp != NULL)
-      {
-      procctp->rs_value.at_val.at_long += pprocsp->rs_value.at_val.at_long;
-      }
-
-    procctp->rs_value.at_flags |= ATR_VFLAG_SET;
-    }
-  else
-    {
-    /* Something is really wrong. ji_wattr[JOB_ATR_resource] should always be set
-       by the time this function is called */
-    sprintf(log_buf, "%s: Resource_List not set. Cannot proceed", __func__);
-    log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, pjob->ji_qs.ji_jobid, log_buf);
-    return(ROUTE_PERM_FAILURE);
-    }
-
-  return(PBSE_NONE);
-  } /* END initialize_procct */
-
-
-int remove_procct(
-
-  job *pjob)
-
-  {
-  pbs_attribute *pattr;
-  resource_def  *pctdef;
-  resource      *pctresc;
-  char           log_buf[LOCAL_LOG_BUF_SIZE];
-
-  pattr = &pjob->ji_wattr[JOB_ATR_resource];
-  if (pattr == NULL)
-    {
-    /* Something is really wrong. ji_wattr[JOB_ATR_resource] should always be set
-       by the time this function is called */
-    sprintf(log_buf, "%s: Resource_List is NULL. Cannot proceed", __func__);
-    log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, pjob->ji_qs.ji_jobid, log_buf);
-    return(ROUTE_PERM_FAILURE);
-    }
-
-  /* unset the procct resource if it has been set */
-  pctdef = find_resc_def(svr_resc_def, "procct", svr_resc_size);
-  
-  if ((pctresc = find_resc_entry(pattr, pctdef)) != NULL)
-    pctdef->rs_free(&pctresc->rs_value);
-
-  return(PBSE_NONE);
-  } /* END remove_procct */
-
 
 
 
@@ -375,7 +222,13 @@ int default_router(
   char                 *destination;
   int                   last;
   int                   local_errno = 0;
-  int                   rc = 0;
+  char                  log_buf[LOCAL_LOG_BUF_SIZE];
+
+    if (LOGLEVEL >= 7)
+      {
+      sprintf(log_buf, "%s", jobp->ji_qs.ji_jobid);
+      LOG_EVENT(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, __func__, log_buf);
+      }
 
   if (qp->qu_attr[QR_ATR_RouteDestin].at_flags & ATR_VFLAG_SET)
     {
@@ -423,26 +276,9 @@ int default_router(
     if (is_bad_dest(jobp, destination))
       continue;
 
-    /* We need to manage the procct resource which is 
-       part of the Resource_List pbs_attribute. At this point 
-       we need to remember what the procct value is and also
-	     make sure it is in the Resource_List before calling
-	     svr_movejob. See ROUTE_RETRY to see what is done
-	     if the job stays in the routing queue. */
-    rc = initialize_procct(jobp);
-    if (rc != PBSE_NONE)
-      {
-      return(rc);
-      }
-
     switch (svr_movejob(jobp, destination, &local_errno, NULL, TRUE))
       {
       case ROUTE_PERM_FAILURE: /* permanent failure */
-
-        if ((rc = remove_procct(jobp)) != PBSE_NONE)
-          {
-          return(rc);
-          }
 
         add_dest(jobp);
 
@@ -460,17 +296,6 @@ int default_router(
 
       case ROUTE_RETRY:  /* failed, but try destination again */
         
-        /* There are no available queues for this job so it is 
-         going to stay in the routing queue. But we need to remove
-         procct from the Resource_List so it does not get sent
-         to the scheduler as part of the job. procct is for 
-         TORQUE use only. */
-
-        if ((rc = remove_procct(jobp)) != PBSE_NONE)
-          {
-          return(rc);
-          }
-
         jobp->ji_retryok = 1;
 
         break;
@@ -517,6 +342,12 @@ int job_route(
 
   if (qp == NULL)
     return(PBSE_QUENOEN);
+  
+  if (LOGLEVEL >= 7)
+    {
+    sprintf(log_buf, "%s", jobp->ji_qs.ji_jobid);
+    LOG_EVENT(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, __func__, log_buf);
+    }
 
   /* see if the job is able to be routed */
   switch (jobp->ji_qs.ji_state)
@@ -632,46 +463,35 @@ int job_route(
 
 
 
-void *reroute_job(
+int reroute_job(
 
-  void *vp)
+  job *pjob,
+  pbs_queue *pque)
 
   {
-  pbs_queue *pque;
-  char      *jobid;
-  job       *pjob;
-  int        rc;
+  int        rc = PBSE_NONE;
+  char       log_buf[LOCAL_LOG_BUF_SIZE];
 
-  jobid = (char *)vp;
-
-  if ((jobid != NULL) &&
-      ((pjob = svr_find_job(jobid, FALSE)) != NULL))
+  if (LOGLEVEL >= 7)
     {
-    pque = get_jobs_queue(&pjob);
-
-    if ((pque != NULL) &&
-        (pque->qu_qs.qu_type == QTYPE_RoutePush))
-      {
-      rc = job_route(pjob);
-      
-      unlock_queue(pque, __func__, NULL, 0);
-
-      if (rc == PBSE_ROUTEREJ)
-        job_abt(&pjob, pbse_to_txt(PBSE_ROUTEREJ));
-      else if (rc == PBSE_ROUTEEXPD)
-        job_abt(&pjob, msg_routexceed);
-      else if (rc == PBSE_QUENOEN)
-        job_abt(&pjob, msg_err_noqueue);
-
-      }
-    else if (pque != NULL)
-      unlock_queue(pque, __func__, NULL, 0);
-
-    if (pjob != NULL)
-      unlock_ji_mutex(pjob, __func__, "1", LOGLEVEL);
+    sprintf(log_buf, "%s", pjob->ji_qs.ji_jobid);
+    LOG_EVENT(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, __func__, log_buf);
     }
 
-  return(NULL);      
+  if ((pque != NULL) &&
+      (pque->qu_qs.qu_type == QTYPE_RoutePush))
+    {
+    rc = job_route(pjob);
+
+    if (rc == PBSE_ROUTEREJ)
+      job_abt(&pjob, pbse_to_txt(PBSE_ROUTEREJ));
+    else if (rc == PBSE_ROUTEEXPD)
+      job_abt(&pjob, msg_routexceed);
+    else if (rc == PBSE_QUENOEN)
+      job_abt(&pjob, msg_err_noqueue);
+    }
+
+  return(rc);      
   } /* END reroute_job() */
 
 
@@ -686,33 +506,71 @@ void *reroute_job(
  * If the queue is "started" and if the number of jobs in the
  * Transiting state is less than the max_running limit, then
  * attempt to route it.
+ *
+ * Be sure to free vp. It is a string that was allocated
+ * in handle_queue_routing_retries
  */
 
-void queue_route(
+void *queue_route(
 
-  pbs_queue *pque)
+  void *vp)
 
   {
-  job    *pjob = NULL;
+  pbs_queue *pque;
+  job       *pjob = NULL;
+  char      *queue_name;
+  char      log_buf[LOCAL_LOG_BUF_SIZE];
 
-  int     iter = -1;
-  time_t  time_now = time(NULL);
+  int       iter = -1;
+  time_t    time_now = time(NULL);
+
+  queue_name = (char *)vp;
+
+  if (queue_name == NULL)
+    {
+    sprintf(log_buf, "NULL queue name");
+    log_err(-1, __func__, log_buf);
+    return(NULL);
+    }
+
+  if (LOGLEVEL >= 7)
+    {
+    snprintf(log_buf, sizeof(log_buf), "queue name: %s", queue_name);
+    log_event(PBSEVENT_SYSTEM, PBS_EVENTCLASS_QUEUE, __func__, log_buf);
+    }
+  
+  pthread_mutex_lock(reroute_job_mutex);
+
+  pque = find_queuebyname(queue_name);
+  if (pque == NULL)
+    {
+    sprintf(log_buf, "Could not find queue %s", queue_name);
+    log_err(-1, __func__, log_buf);
+    free(queue_name);
+    pthread_mutex_unlock(reroute_job_mutex);
+    return(NULL);
+    }
 
   while ((pjob = next_job(pque->qu_jobs,&iter)) != NULL)
     {
     /* the second condition says we only want to try if routing
      * has been tried once - this is to let req_commit have the 
      * first crack at routing always */
+    unlock_queue(pque, __func__, NULL, 0);
     if ((pjob->ji_qs.ji_un.ji_routet.ji_rteretry <= time_now - ROUTE_RETRY_TIME) &&
         (pjob->ji_qs.ji_un.ji_routet.ji_rteretry != 0))
       {
-      enqueue_threadpool_request(reroute_job, strdup(pjob->ji_qs.ji_jobid));
+      reroute_job(pjob, pque);
+      unlock_ji_mutex(pjob, __func__, "1", LOGLEVEL);
       }
-
-    unlock_ji_mutex(pjob, __func__, "1", LOGLEVEL);
+    else
+      unlock_ji_mutex(pjob, __func__, "1", LOGLEVEL);
     }
 
-  return;
+  free(queue_name);
+  unlock_queue(pque, __func__, NULL, 0);
+  pthread_mutex_unlock(reroute_job_mutex);
+  return(NULL);
   } /* END queue_route() */
 
 

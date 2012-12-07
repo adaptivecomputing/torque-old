@@ -1,5 +1,9 @@
 #
+<<<<<<< HEAD
 # TORQUE 4.1.1 README (released Aug, 7 2012)
+=======
+# TORQUE master branch README (major changes and updates go into this branch)
+>>>>>>> 1bc7d367582514e9a021181a19f662b819fc0dd5
 #
 
 Homepage:                     http://adaptivecomputing.com/torque/

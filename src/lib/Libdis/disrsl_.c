@@ -95,26 +95,26 @@ static unsigned ulmaxdigs = 0;
 int disrsl_(
 
   struct tcp_chan *chan,
-  int  *negate,
-  unsigned long *value,
-  unsigned long  count)
+  int             *negate,
+  unsigned long   *value,
+  unsigned long    count)
 
   {
-  int  c;
-  unsigned long locval;
-  unsigned long ndigs;
-  char  *cp;
-  char  scratch[DIS_BUFSIZ+1];
+  int            c;
+  unsigned long  locval;
+  unsigned long  ndigs;
+  char          *cp;
+  char           scratch[DIS_BUFSIZ];
 
   assert(negate != NULL);
   assert(value != NULL);
   assert(count);
 
-  memset(scratch, 0, DIS_BUFSIZ+1);
+  memset(scratch, 0, sizeof(scratch));
 
   if (ulmaxdigs == 0)
     {
-    cp = discul_(scratch + DIS_BUFSIZ, ULONG_MAX, &ulmaxdigs);
+    cp = discul_(scratch + sizeof(scratch) - 1, ULONG_MAX, &ulmaxdigs);
 
     ulmax = (char *)calloc(1, ulmaxdigs);
 
@@ -234,7 +234,6 @@ int disrsl_(
           if (((c = *++cp) < '0') || (c > '9'))
             {
             /* FAILURE */
-
             return(DIS_NONDIGIT);
             }
 

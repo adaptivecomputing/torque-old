@@ -157,7 +157,7 @@ void *next_thing(resizable_array *ra, int *iter)
   exit(1);
   }
 
-void append_link(tlist_head *head, list_link *new, void *pobj)
+void append_link(tlist_head *head, list_link *new_link, void *pobj)
   {
   fprintf(stderr, "The call to append_link needs to be mocked!!\n");
   exit(1);
@@ -181,12 +181,12 @@ AvlTree AVL_insert(u_long key, uint16_t port, struct pbsnode *node, AvlTree tree
   exit(1);
   }
 
-int unlock_node(struct pbsnode *the_node, char *id, char *msg, int logging)
+int unlock_node(struct pbsnode *the_node, const char *id, char *msg, int logging)
   {
   return(0); 
   }                           
 
-int lock_node(struct pbsnode *the_node, char *id, char *msg, int logging)
+int lock_node(struct pbsnode *the_node, const char *id, char *msg, int logging)
   { 
   return(0); 
   }                           

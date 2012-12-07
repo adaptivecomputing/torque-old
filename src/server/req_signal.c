@@ -105,7 +105,7 @@
 
 /* Private Function local to this file */
 
-static void post_signal_req (struct work_task *);
+static void post_signal_req (batch_request *preq);
 
 /* Global Data Items: */
 
@@ -201,6 +201,7 @@ int req_signaljob(
   if (preq->rq_type == PBS_BATCH_AsySignalJob)
     {
     reply_ack(preq);
+    preq->rq_noreply = TRUE;
     }
 
   /* pass the request on to MOM */
@@ -208,20 +209,30 @@ int req_signaljob(
   if ((rc = copy_batchrequest(&dup_req, preq, 0, -1)) != 0)
     {
     req_reject(rc, 0, preq, NULL, "can not allocate memory");
+    unlock_ji_mutex(pjob, __func__, "4", LOGLEVEL);
     }
   /* The dup_req is freed in relay_to_mom (failure)
    * or in issue_Drequest (success) */
-  else if ((rc = relay_to_mom(&pjob, dup_req, post_signal_req)) != 0)
+  else 
     {
-    req_reject(rc, 0, preq, NULL, NULL);  /* unable to get to MOM */
-    }
-  else
-    {
-    free_br(preq);
+    rc = relay_to_mom(&pjob, dup_req, NULL);
+
+    if (pjob != NULL)
+      unlock_ji_mutex(pjob, __func__, "4", LOGLEVEL);
+
+    if (rc != PBSE_NONE)
+      {
+      free_br(dup_req);
+      req_reject(rc, 0, preq, NULL, NULL);  /* unable to get to MOM */
+      }
+    else
+      {
+      post_signal_req(dup_req);
+      free_br(preq);
+      }
     }
 
   /* If successful we ack after mom replies to us, we pick up in post_signal_req() */
-  unlock_ji_mutex(pjob, __func__, "4", LOGLEVEL);
 
   return(PBSE_NONE);
   }  /* END req_signaljob() */
@@ -238,13 +249,14 @@ int issue_signal(
 
   job  **pjob_ptr,
   char  *signame, /* name of the signal to send */
-  void  (*func)(struct work_task *),
+  void  (*func)(batch_request *),
   void  *extra) /* extra parameter to be stored in sig request */
 
   {
   int                   rc;
   job                  *pjob = *pjob_ptr;
   struct batch_request *newreq;
+  char                  jobid[PBS_MAXSVRJOBID + 1];
 
   /* build up a Signal Job batch request */
 
@@ -263,7 +275,24 @@ int issue_signal(
 
   /* The newreq is freed in relay_to_mom (failure)
    * or in issue_Drequest (success) */
-  rc = relay_to_mom(&pjob, newreq, func);
+  rc = relay_to_mom(&pjob, newreq, NULL);
+
+  if ((rc == PBSE_NONE) &&
+      (pjob != NULL))
+    {
+    strcpy(jobid, pjob->ji_qs.ji_jobid);
+    unlock_ji_mutex(pjob, __func__, NULL, 0);
+    func(newreq);
+
+    *pjob_ptr = svr_find_job(jobid, TRUE);
+    }
+  else
+    {
+    free_br(newreq);
+
+    if (pjob == NULL)
+      *pjob_ptr = NULL;
+    }
 
   return(rc);
   }  /* END issue_signal() */
@@ -276,23 +305,15 @@ int issue_signal(
  * post_signal_req - complete a Signal Job Request (externally generated)
  */
 
-static void post_signal_req(
+void post_signal_req(
 
-  struct work_task *pwt)
+  batch_request *preq)
 
   {
   char                 *jobid;
   job                  *pjob;
 
   char                  log_buf[LOCAL_LOG_BUF_SIZE];
-  struct batch_request *preq;
-
-  svr_disconnect(pwt->wt_event); /* disconnect from MOM */
-
-  preq = get_remove_batch_request((char *)pwt->wt_parm1);
- 
-  free(pwt->wt_mutex);
-  free(pwt);
 
   /* request has been handled elsewhere */
   if (preq == NULL)

@@ -134,7 +134,12 @@ int req_movejob(
     {
     return(PBSE_NONE);
     }
-
+  if (LOGLEVEL >= 7)
+    {
+    sprintf(log_buf, "%s", jobp->ji_qs.ji_jobid);
+    LOG_EVENT(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, __func__, log_buf);
+    }
+  
   if ((jobp->ji_qs.ji_state != JOB_STATE_QUEUED) &&
       (jobp->ji_qs.ji_state != JOB_STATE_HELD) &&
       (jobp->ji_qs.ji_state != JOB_STATE_WAITING))
@@ -156,6 +161,21 @@ int req_movejob(
    * svr_movejob() does the real work, handles both local and
    * network moves
    */
+  
+  /* We have found that sometimes the destination queue and the 
+     parent queue are the same. If so we do not need to do
+     anything else */
+  if (strcmp(jobp->ji_qs.ji_queue, req->rq_ind.rq_move.rq_destin) == 0)
+    {
+    sprintf(log_buf, "Job %s already in queue %s", jobp->ji_qs.ji_jobid, jobp->ji_qs.ji_queue);
+    if (LOGLEVEL >= 7)
+      {
+      log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, __func__, log_buf);
+      }
+    unlock_ji_mutex(jobp, __func__, "2", LOGLEVEL);
+    req_reject(PBSE_JOB_ALREADY_IN_QUEUE, 0, req, NULL, log_buf);
+    return(PBSE_NONE);
+    }
 
   switch (svr_movejob(jobp, req->rq_ind.rq_move.rq_destin, &local_errno, req, FALSE))
     {
@@ -263,7 +283,8 @@ int req_orderjob(
     }
   else if ((pjob1->ji_qhdr == NULL) || (pjob2->ji_qhdr == NULL))
     {
-    req_reject(PBSE_BADSTATE, 0, req, NULL, "One of the jobs does not have a queue");     
+    req_reject(PBSE_BADSTATE, 0, req, NULL, "One of the jobs does not have a queue");
+    return(PBSE_NONE);
     }
   else if (pjob1->ji_qhdr != pjob2->ji_qhdr)
     {
@@ -271,7 +292,7 @@ int req_orderjob(
     int ok = FALSE;
 
     if ((pque2 = get_jobs_queue(&pjob2)) == NULL)
-      req_reject(PBSE_BADSTATE, 0, req, NULL, "job2 queue is unavailable");
+      rc = PBSE_BADSTATE;
     else
       {
       if ((rc = svr_chkque(pjob1, pque2, get_variable(pjob1, pbs_o_host), MOVE_TYPE_Order, NULL)) == PBSE_NONE)
@@ -279,7 +300,7 @@ int req_orderjob(
         unlock_queue(pque2, "req_orderjob", "pque2 svr_chkque pass", LOGLEVEL);
         if ((pque1 = get_jobs_queue(&pjob1)) == NULL)
           {
-          req_reject(PBSE_BADSTATE, 0, req, NULL, "job1 queue is unavailable");
+          rc = PBSE_BADSTATE;
           }
         else if (pjob1 != NULL)
           {

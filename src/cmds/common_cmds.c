@@ -7,9 +7,15 @@
 #include <stdio.h>
 #include <ctype.h>
 #include "pbs_error_db.h"
+#include "dynamic_string.h"
+
+#define  JOB_ENV_START_SIZE 2048
+
 
 void strtolower(
+
   char *value)
+
   {
   int pos = 0;
   
@@ -26,9 +32,11 @@ void strtolower(
  * and escapes nested characters if necessary.
  */
 int copy_env_value(
+
   memmgr **mm,            /* memory manager */
   char    *cur_val,
   char   **value)
+
   {
   char *tmpPtr;
   int   escape_count = 0, len_value = 0;
@@ -84,19 +92,25 @@ int copy_env_value(
  * name & value are both allocated inside the function
  */
 int parse_env_line(
+
   memmgr **mm,            /* memory manager */
-  char *one_var,
-  char **name,
-  char **value)
+  char    *one_var,
+  char   **name,
+  char   **value)
+
   {
   char *tmp_char = NULL;
-  int pos_eq = 0, tmp_pos = 0;
-  int len_name = 0, len_value = 0, len_total = 0;
+  int   pos_eq = 0;
+  int   tmp_pos = 0;
+  int   len_name = 0;
+  int   len_value = 0;
+  int   len_total = 0;
 
   len_total = strlen(one_var);
   tmp_char = strchr(one_var, '=');
+
   /* check to make sure we got an '=' */
-  if(tmp_char == NULL)
+  if (tmp_char == NULL)
     return(PBSE_BAD_PARAMETER);
 
   pos_eq = tmp_char - one_var;
@@ -111,12 +125,15 @@ int parse_env_line(
     {
     tmp_pos++;
     }
+
   if (tmp_pos == len_total)
     {
     /* The value consists of ALL spaces, reset to = pos + 1 */
     tmp_pos = pos_eq + 1;
     }
+
   len_value = len_total - tmp_pos;
+
   if (len_value == 0)
     {
     *value = NULL;
@@ -138,9 +155,11 @@ int parse_env_line(
  * a hashmap for use through out the execution of the command
  */
 void set_env_opts(
-  memmgr **mm,            /* memory manager */
+
+  memmgr   **mm,            /* memory manager */
   job_data **env_attr,
-  char **envp)
+  char     **envp)
+
   {
   int   var_num = 0;
   char *name = NULL;
@@ -150,17 +169,12 @@ void set_env_opts(
   while (envp[var_num] != NULL)
     {
     rc = parse_env_line(mm, envp[var_num], &name, &value);
-    if (rc != PBSE_NONE) 
+    if (rc == PBSE_NONE) 
       {
-      fprintf(stderr, "Malformed environment variable %s. Will not add to job environment\n", envp[var_num]);
-      ;
-      exit(1);
+      hash_add_item(mm, env_attr, name, value, ENV_DATA, SET);
+      memmgr_free(mm, name); name = NULL;
+      memmgr_free(mm, value); value = NULL;
       }
-
-/*      strtolower(name); */
-    hash_add_item(mm, env_attr, name, value, ENV_DATA, SET);
-    memmgr_free(mm, name); name = NULL;
-    memmgr_free(mm, value); value = NULL;
 
     var_num++;
     }
@@ -192,7 +206,8 @@ void calloc_or_fail(
  * env
  * return 1 on success, 0 on failure
  */
-void parse_variable_list(
+
+int parse_variable_list(
 
   memmgr   **mm,        /* memory manager */
   job_data **dest_hash, /* This is the dest hashmap for vars found */
@@ -202,66 +217,105 @@ void parse_variable_list(
   char      *the_list)  /* name=value,name1=value1,etc to be parsed */
 
   {
-  int alloc_size = 0;
-  char *s = NULL;
-  char *e = NULL;
-  char *delim = NULL;
-  char *name = NULL;
-  char *tmp_name = NULL;
-  char *val = NULL;
-  job_data *hash_var = NULL;
+  int             alloc_size = 0;
+  dynamic_string *job_env = get_dynamic_string(-1, NULL);
+  char            name[JOB_ENV_START_SIZE];
+  char           *s = NULL;
+  char           *c = NULL;
+  char           *delim = NULL;
+
   s = the_list;
+
   while (s)
     {
     delim = strpbrk(s, "=,");
 
-    /* There is no = or , in the following string */
-    /* The string is improperly formatted (, found when = should have been) */
-    /* The start character is a , or = */
-    if ((delim == NULL) || (*delim == ',') || (delim == s))
-      break;
-
-    e = strchr(delim+1, ',');
-    /* This is last value */
-    if (!e)
-      e = strchr(delim+1, '\0');
-
-    /* Get the variable from the src hash */
-    /* Set the variable from the incoming data */
-    alloc_size = delim - s;
-    /* the +8 is for prepending the value of pbs_var_ to the value
-     * This is used and removed in build_var_list later */
-    calloc_or_fail(mm, &name, alloc_size+8, "parse_variable_list name");
-    memcpy(name, "pbs_var_", 8);
-    memcpy(name+8, s, alloc_size);
-    if ((e - delim) == 1)
+    if (delim == s)
       {
-      calloc_or_fail(mm, &tmp_name, alloc_size, "parse_variable_list name");
-      memcpy(tmp_name, s, alloc_size);
-      if (hash_find(user_env, tmp_name, &hash_var))
+      fprintf(stderr, "invalid -v syntax\n");
+      return(3);
+      }
+
+    /* If delim is ','or NULL we have no value. Get the environment variable in s */ 
+    /* If delim is '=' and delim+1 is ',' or NULL we also need to get 
+       the environment variable in s */
+    if (delim == NULL || *delim == ',' ||
+       ((*delim == '=') && (*(delim + 1) == ',')) ||
+       ((*delim == '=') && ((delim + 1) == NULL)))
+      {
+      if (delim == NULL)
+        alloc_size = strlen(s);
+      else
+        alloc_size = delim - s;
+
+      memcpy(name, s, alloc_size);
+      name[alloc_size] = '\0';
+      c = getenv(name);
+
+      if (c != NULL)
         {
-        hash_add_or_exit(mm, dest_hash, name, hash_var->value, hash_var->var_type);
+        append_dynamic_string(job_env, name);
+        append_dynamic_string(job_env, "=");
+        append_dynamic_string(job_env, c);
+        if (delim == NULL)
+          s = NULL;
+        else
+          {
+          append_dynamic_string(job_env, ",");
+          s = delim + 1;
+          if (*s == ',') /* This ended in '='. Move one more */
+            s++;
+          }
         }
       else
         {
-        hash_add_or_exit(mm, dest_hash, name, "", CMDLINE_DATA);
+        /* No environment variable set for this name. Pass it on with value "" */
+        if (delim == NULL)
+          {
+          snprintf(name, sizeof(name), "%s", s);
+          append_dynamic_string(job_env, name);
+          append_dynamic_string(job_env, "=");
+          s = NULL;
+          }
+        else
+          {
+          memcpy(name, s, delim - s);
+          name[delim - s] = '\0';
+          append_dynamic_string(job_env, name);
+          append_dynamic_string(job_env, "=,");
+          s = delim + 1;
+          }
         }
       }
     else
       {
-      delim++; /* Move past the = */
-      alloc_size = e - delim;
-      calloc_or_fail(mm, &val, alloc_size, "parse_variable_list val");
-      strncpy(val, delim, alloc_size);
-      hash_add_or_exit(mm, dest_hash, name, val, var_type);
+      /* We have a key value pair */
+      delim = strchr(s, ',');
+      if (delim == NULL)
+        {
+        alloc_size = strlen(s);
+        /* we are at the end */
+        append_dynamic_string(job_env, s);
+        s = NULL;
+        }
+      else
+        {
+        /* We have another variable in the list. Take care of the current one */
+        alloc_size = delim - s;
+        memcpy(name, s, alloc_size);
+        name[alloc_size] = '\0';
+        append_dynamic_string(job_env, name);
+        append_dynamic_string(job_env, ",");
+        s = delim + 1;
+        }
       }
-    if (*e == '\0')
-      s = NULL; /* End of string previously found */
-    else
-      s = e + 1; /* Set the start to one char beyond the , */
     }
-  } /* END parse_variable_list() */
 
+  hash_add_or_exit(mm, dest_hash, ATTR_v, job_env->str, ENV_DATA);
+  free_dynamic_string(job_env);
+
+  return(PBSE_NONE);
+  } /* END parse_variable_list() */ 
 
 
 

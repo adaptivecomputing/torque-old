@@ -7,6 +7,7 @@
 #include "work_task.h"
 #include "attribute.h"
 #include "u_tree.h"
+#include "hash_table.h"
 
 
 #define rot(x,k) (((x)<<(k)) | ((x)>>(32-(k))))
@@ -46,7 +47,6 @@ struct node_state
     {INUSE_OFFLINE, ND_offline},
     {INUSE_RESERVE, ND_reserve},
     {INUSE_JOB,     ND_job_exclusive},
-    {INUSE_JOBSHARE, ND_job_sharing},
     {INUSE_BUSY,    ND_busy},
     {0,             NULL}
 };
@@ -54,8 +54,8 @@ struct node_state
 void log_record(int eventtype, int objclass, const char *objname, char *msg) {}
 void log_event(int eventtype, int objclass, const char *objname, char *text) {}
 void log_err(int errnum, const char *routine, char *text) {}
-void lock_node(struct pbsnode *pnode, const char *method, char *msg, int log_level) {}
-void unlock_node(struct pbsnode *pnode, const char *method, char *msg, int log_level) {}
+int lock_node(struct pbsnode *pnode, const char *method, char *msg, int log_level) {return(0);}
+int unlock_node(struct pbsnode *pnode, const char *method, char *msg, int log_level) {return(0);}
 
 
 
@@ -430,22 +430,6 @@ int PNodeStateToString(
 
     }
 
-  if (SBM & (INUSE_JOBSHARE))
-    {
-    len = strlen(ND_job_sharing) + 1;
-
-    if (len < BufSize)
-      {
-      if (Buf[0] != '\0')
-        strcat(Buf, ",");
-      else
-        len--;
-
-      strcat(Buf, ND_job_sharing);
-      BufSize -= len;
-      }
-    }
-
   if (SBM & (INUSE_BUSY))
     {
     len = strlen(ND_busy) + 1;
@@ -545,7 +529,7 @@ int attr_atomic_node_set(
 
   struct svrattrl *plist,    /* list of pbs_attribute modif structs */
   pbs_attribute   *old,      /* unused */
-  pbs_attribute   *new,      /* new pbs_attribute array begins here */
+  pbs_attribute   *new_attr,      /* new pbs_attribute array begins here */
   attribute_def   *pdef,     /* begin array  definition structs */
   int              limit,    /* number elts in definition array */
   int              unkn,     /* <0 unknown attrib not permitted */
@@ -617,7 +601,7 @@ int attr_atomic_node_set(
 
     /*update "new" with "temp", MODIFY is set on "new" if changed*/
 
-    (new + index)->at_flags &= ~ATR_VFLAG_MODIFY;
+    (new_attr + index)->at_flags &= ~ATR_VFLAG_MODIFY;
 
     if ((plist->al_op != INCR) && (plist->al_op != DECR) &&
         (plist->al_op != SET) && (plist->al_op != INCR_OLD))
@@ -628,7 +612,7 @@ int attr_atomic_node_set(
       {
       /* "temp" has a data value, use it to update "new" */
 
-      if ((rc = (pdef + index)->at_set(new + index, &temp, plist->al_op)) != 0)
+      if ((rc = (pdef + index)->at_set(new_attr + index, &temp, plist->al_op)) != 0)
         {
         (pdef + index)->at_free(&temp);
         break;
@@ -637,8 +621,8 @@ int attr_atomic_node_set(
     else if (temp.at_flags & ATR_VFLAG_MODIFY)
       {
 
-      (pdef + index)->at_free(new + index);
-      (new + index)->at_flags |= ATR_VFLAG_MODIFY;
+      (pdef + index)->at_free(new_attr + index);
+      (new_attr + index)->at_flags |= ATR_VFLAG_MODIFY;
       }
 
     (pdef + index)->at_free(&temp);
@@ -738,7 +722,7 @@ int find_attr(
 
 int node_gpustatus_list(
 
-    pbs_attribute *new,      /* derive status into this pbs_attribute*/
+    pbs_attribute *new_attr,      /* derive status into this pbs_attribute*/
     void          *pnode,    /* pointer to a pbsnode struct     */
     int            actmode)  /* action mode; "NEW" or "ALTER"   */
 
@@ -767,15 +751,15 @@ int node_gpustatus_list(
         temp.at_flags = ATR_VFLAG_SET;
         temp.at_type  = ATR_TYPE_ARST;
 
-        rc = set_arst(new, &temp, SET);
+        rc = set_arst(new_attr, &temp, SET);
         }
       else
         {
         /* node has no properties, setup empty pbs_attribute */
 
-        new->at_val.at_arst = NULL;
-        new->at_flags       = 0;
-        new->at_type        = ATR_TYPE_ARST;
+        new_attr->at_val.at_arst = NULL;
+        new_attr->at_flags       = 0;
+        new_attr->at_type        = ATR_TYPE_ARST;
         }
 
       break;
@@ -792,9 +776,9 @@ int node_gpustatus_list(
 
       /* update node with new attr_strings */
 
-      np->nd_gpustatus = new->at_val.at_arst;
+      np->nd_gpustatus = new_attr->at_val.at_arst;
 
-      new->at_val.at_arst = NULL;
+      new_attr->at_val.at_arst = NULL;
       /* update number of status items listed in node */
       /* does not include name and subnode property */
 
@@ -834,7 +818,7 @@ int get_value_hash(
 int set_arst(
 
   pbs_attribute *attr,  /* I/O */
-  pbs_attribute *new,   /* I */
+  pbs_attribute *new_attr,   /* I */
   enum batch_op     op)    /* I */
 
   {
@@ -853,7 +837,7 @@ int set_arst(
   struct array_strings *tmp_arst = NULL;
 
   pas = attr->at_val.at_arst;
-  newpas = new->at_val.at_arst;
+  newpas = new_attr->at_val.at_arst;
 
   if (newpas == NULL)
     {
@@ -913,7 +897,7 @@ int set_arst(
 
       pas->as_next    = pas->as_buf;
 
-      if (new->at_val.at_arst == (struct array_strings *)0)
+      if (new_attr->at_val.at_arst == (struct array_strings *)0)
         break; /* none to set */
 
       nsize = newpas->as_next - newpas->as_buf; /* space needed */
@@ -1202,7 +1186,7 @@ void *get_next(
 
 int node_status_list(
 
-  pbs_attribute *new,           /*derive status into this pbs_attribute*/
+  pbs_attribute *new_attr,           /*derive status into this pbs_attribute*/
   void          *pnode,         /*pointer to a pbsnode struct     */
   int            actmode)       /*action mode; "NEW" or "ALTER"   */
 
@@ -1231,15 +1215,15 @@ int node_status_list(
         temp.at_flags = ATR_VFLAG_SET;
         temp.at_type  = ATR_TYPE_ARST;
 
-        rc = set_arst(new, &temp, SET);
+        rc = set_arst(new_attr, &temp, SET);
         }
       else
         {
         /* node has no properties, setup empty pbs_attribute */
 
-        new->at_val.at_arst = NULL;
-        new->at_flags       = 0;
-        new->at_type        = ATR_TYPE_ARST;
+        new_attr->at_val.at_arst = NULL;
+        new_attr->at_flags       = 0;
+        new_attr->at_type        = ATR_TYPE_ARST;
         }
 
       break;
@@ -1256,9 +1240,9 @@ int node_status_list(
 
       /* update node with new attr_strings */
 
-      np->nd_status = new->at_val.at_arst;
+      np->nd_status = new_attr->at_val.at_arst;
 
-      new->at_val.at_arst = NULL;
+      new_attr->at_val.at_arst = NULL;
       /* update number of status items listed in node */
       /* does not include name and subnode property */
 
@@ -1901,6 +1885,9 @@ int add_hash(hash_table_t *ht, int value, void *key)
   {
   int index;
 
+  if (ht == NULL)
+    return(0);
+
   /* check if we need to rehash */
   if (ht->size == ht->num)
     {
@@ -2024,22 +2011,22 @@ int decode_str(pbs_attribute *patr, char *name, char *rescn, char *val, int perm
   return(0);
   }
 
-int set_node_ntype(pbs_attribute *pattr, pbs_attribute *new, enum batch_op op)
+int set_node_ntype(pbs_attribute *pattr, pbs_attribute *new_attr, enum batch_op op)
   {
   return(0);
   }
 
-int node_mom_rm_port_action(pbs_attribute *new, void *pobj, int actmode)
+int node_mom_rm_port_action(pbs_attribute *new_attr, void *pobj, int actmode)
   {
   return(0);
   }
 
-int set_null (pbs_attribute * patr, pbs_attribute * new, enum batch_op op)
+int set_null (pbs_attribute * patr, pbs_attribute * new_attr, enum batch_op op)
   {
   return(0);
   }
 
-int set_note_str(struct pbs_attribute *attr, struct pbs_attribute *new, enum batch_op op)
+int set_note_str(struct pbs_attribute *attr, struct pbs_attribute *new_attr, enum batch_op op)
   {
   return(0);
   }
@@ -2054,27 +2041,27 @@ int encode_jobs(pbs_attribute *pattr, tlist_head *ph, char *aname, char *rname, 
   return(0);
   }
 
-int set_str(struct pbs_attribute *attr, struct pbs_attribute *new, enum batch_op op)
+int set_str(struct pbs_attribute *attr, struct pbs_attribute *new_attr, enum batch_op op)
   {
   return(0);
   }
 
-int node_prop_list(pbs_attribute *new, void *pnode, int actmode)
+int node_prop_list(pbs_attribute *new_attr, void *pnode, int actmode)
   {
   return(0);
   }
 
-int node_state(pbs_attribute *new, void *pnode, int actmode)
+int node_state(pbs_attribute *new_attr, void *pnode, int actmode)
   {
   return(0);
   }
 
-int set_l(struct pbs_attribute *attr, struct pbs_attribute *new, enum batch_op op)
+int set_l(struct pbs_attribute *attr, struct pbs_attribute *new_attr, enum batch_op op)
   {
   return(0);
   }
 
-int numa_str_action(pbs_attribute *new, void *pnode, int actmode)
+int numa_str_action(pbs_attribute *new_attr, void *pnode, int actmode)
   {
   return(0);
   }
@@ -2086,22 +2073,22 @@ int encode_ntype(pbs_attribute *pattr, tlist_head *ph, char *aname, char *rname,
   return(0);
   }
 
-int node_note(pbs_attribute *new, void *pnode, int actmode)
+int node_note(pbs_attribute *new_attr, void *pnode, int actmode)
   {
   return(0);
   }
 
-int set_node_state(pbs_attribute *pattr, pbs_attribute *new, enum batch_op op)
+int set_node_state(pbs_attribute *pattr, pbs_attribute *new_attr, enum batch_op op)
   {
   return(0);
   }
 
-int node_np_action(pbs_attribute *new, void *pobj, int actmode)
+int node_np_action(pbs_attribute *new_attr, void *pobj, int actmode)
   {
   return(0);
   }
 
-int gpu_str_action(pbs_attribute *new, void *pnode, int actmode)
+int gpu_str_action(pbs_attribute *new_attr, void *pnode, int actmode)
   {
   return(0);
   }
@@ -2111,7 +2098,7 @@ int comp_str(struct pbs_attribute *attr, struct pbs_attribute *with)
   return(0);
   }
 
-int node_numa_action(pbs_attribute *new, void *pnode, int actmode)
+int node_numa_action(pbs_attribute *new_attr, void *pnode, int actmode)
   {
   return(0);
   }
@@ -2126,17 +2113,17 @@ int encode_state(pbs_attribute *pattr, tlist_head *ph, char *aname, char *rname,
   return(0);
   }
 
-int node_mom_port_action(pbs_attribute *new, void *pobj, int actmode)
+int node_mom_port_action(pbs_attribute *new_attr, void *pobj, int actmode)
   {
   return(0);
   }
 
-int node_ntype(pbs_attribute *new, void *pnode, int actmode)
+int node_ntype(pbs_attribute *new_attr, void *pnode, int actmode)
   {
   return(0);
   }
 
-int node_gpus_action(pbs_attribute *new, void *pnode, int actmode)
+int node_gpus_action(pbs_attribute *new_attr, void *pnode, int actmode)
   {
   return(0);
   }
@@ -2270,4 +2257,23 @@ int enqueue_threadpool_request(
 int unlock_ji_mutex(job *pjob, const char *id, char *msg, int logging)
   {
   return(0);
+  }
+
+int copy_properties(struct pbsnode *dest, struct pbsnode *src)
+  {
+  return(0);
+  }
+
+hash_table_t *create_hash(int size)
+  {
+  return(NULL);
+  }
+
+void free_hash(hash_table_t *ht) {}
+
+void free_all_keys(hash_table_t *ht) {}
+
+struct pbsnode *find_node_in_allnodes(all_nodes *an, char *nodename)
+  {
+  return(NULL);
   }

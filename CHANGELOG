@@ -1,5 +1,183 @@
 c - crash     b - bug fix    e - enhancement    f - new feature  n - note
 
+4.2.0
+  f - Support the MIC architecture. This was co-developed with Doug Johnson at 
+      Ohio Supercomputer Center (OSC) and provides support for the Intel® MIC 
+      architecture similar to GPU support in TORQUE.
+
+4.1.4
+  e - When in cray mode, write physmem and availmem in addition to totmem so that 
+      Moab correctly reads memory info.
+  e - Specifying size, nodes, and mppwidth and all mutually exclusize, so reject
+      job submissions that attempt to specify more than one of these. TRQ-1185.
+  b - Merged changes for revision 7000 by hand because the merge was not clean. This
+      fixes problems with a deadlock when doing job dependencies using synccount/syncwith.
+      TRQ-1374
+  b - Fix a segfault in req_jobobit due to an off-by-one error. TRQ-1361.
+  e - Add the svn revision to --version outputs. TRQ-1357.
+  b - Fix a race condition in mom hierarchy reporting. TRQ-1378.
+  b - Fixed pbs_mom so epilogue will only run once. TRQ-1134
+  b - Fix some debug output escaping into job output. TRQ-1360.
+  b - Fixed a problem where server threads all get stuck in a poll. The problem
+      was an infinite loop created in socket_wait_for_read if poll return -1.
+      TRQ-1382
+  b - Fix a Cray-mode bug with jobs ending immediately when spanning nodes of 
+      different proc counts when specifying -l procs. TRQ-1365.
+  b - Don't fail to make the tmpdir for sister moms. bugzilla #220, TRQ-1403.
+  c - Fix crashes due to unprotected array accesses. TRQ-1395.
+  b - Fixed a deadlock in get_parent_dest_queues when the queue_parent_name
+      and queue_dest_name are the same. TRQ-1413. 11/7/12
+  b - Fixed segfault in req_movejob where the job ji_qhdr was NULL. TRQ-1416
+  b - Fix a conflict in the code for herogeneous jobs and regular jobs.
+  b - For alps jobs, use the login nodes evenly even when one goes down. TRQ-1317.
+  b - Display the correct 'Assigned Cpu Count' in momctl output. TRQ-1307.
+  b - Make pbs_original_connect() no longer hang if the host is down. TRQ-1388.
+  b - Make epilogues run only once and be executed by the child and not the main
+      pbs_mom process. TRQ-937.
+  b - Reduce the error messages in HA mode from moms. They now only log errors if
+      no server could be contacted. TRQ-1385.
+  b - Fixed a seg-fault in send_depend_req. Also fixed a deadlock in the depend_on_term
+      TRQ-1430 and TRQ-1436
+  b - Fixed a null pointer dereference seg-fault when checking for disallowed types
+      TRQ-1408.
+  b - Fix a counting problem when running multi-req ALPS jobs (cray only). TRQ-1431.
+  b - Remove red herring error messages 'did not find work task for local request'.
+      These tasks are no longer created since issue_Drequest blocks until it gets the
+      reply and then processes it. TRQ-1423.
+  b - Fixed a problem where qsub was not applying the submit filter when given in the torque.cfg
+      file. TRQ-1446
+  e - When the mom has no jobs, check the aux path to make sure it is clean and 
+      that we aren't leaving any files there. TRQ-1240.
+  b - Fix a counting problem when running multi-req ALPS jobs (cray only). TRQ-1431.
+  b - Remove red herring error messages 'did not find work task for local request'.
+      These tasks are no longer created since issue_Drequest blocks until it gets the
+      reply and then processes it. TRQ-1423.
+  e - When the mom has no jobs, check the aux path to make sure it is clean and
+      that we aren't leaving any files there. TRQ-1240.
+  b - Made it so that threads taken up by poll job tasks cannot consume all available
+      threads in the thread pool. This will make it so other work can continue if 
+      poll jobs get stuck for whatever reason and that the server will recover.  TRQ-1433
+  b - Fix a deadlock when recording alps reservations. TRQ-1421.
+  b - Fixed a segfault in req_jobobit caused by NULL pointer assignment to variable
+      pa. TRQ-1467
+  b - Fixed deadlock in remove_array. remove_array was calling get_arry with allarrays_mutex
+      locked. TRQ-1466
+  b - Fixed a problem with an end of file error when running momctl -dx. TRQ-1432.
+  b - Fix a deadlock in rare cases on job insertion. TRQ-1472.
+  b - Fix a deadlock after restarting pbs_server when it was SIGKILL'd before a 
+      job array was done cloning. TRQ-1474.
+  b - Fix a Cray-related deadlock. Always lock the reporter mom before a compute 
+      node. TRQ-1445
+  b - Additional fix for TRQ-1472. In rm_request on the mom pbs_tcp_timeout was
+      getting set to 0 which made it so the MOM would fail reading incoming data 
+      if it had not already arrived. This would cause momctl -to fail with an
+      end of file message.
+  e - Add a safety net to resend any obits for exiting jobs on the mom that still
+      haven't cleaned up after five minutes. TRQ-1458.
+  b - Fix cray running jobs being cancelled after a restart due to jobs not being 
+      set to the login nodes. TRQ-1482.
+  b - Fix a bug that using -V got rid of -v. TRQ-1457.
+  b - Make qsub -I -x work again. TRQ-1483.
+  c - Fix a potential crash when getting the status of a login node in cray mode.
+      TRQ-1491.
+
+4.1.3
+  b - fix a security loophole that potentially allowed an interactive job to run 
+      as root due to not resetting a value when $attempt_to_make_dir and $tmpdir
+      are set. TRQ-1078.
+  b - fix down_on_error for the server. TRQ-1074.
+  b - prevent pbs_server from spinning in select due to sockets in CLOSE_WAIT.
+      TRQ-1161.
+  e - Have pbs_server save the queues each time before exiting so that legacy 
+      formats are converted to xml after upgrading. TRQ-1120.
+  b - Fix phantom jobs being left on the pbs_moms and blocking jobs for Cray 
+      hardware. TRQ-1162. (Thanks Matt Ezell)
+  b - Fix a race condition on free'd memory when check for orphaned alps
+      reservations. TRQ-1181. (Thanks Matt Ezell)
+  b - If interrupted when reading the terminal type for an interactive job continue 
+      trying to read instead of giving up. TRQ-1091.
+  b - Fix displaying elapsed time for a job. TRQ-1133.
+  b - Make offlining nodes persistent after shutting down. TRQ-1087.
+  b - Fixed a memory leak when calling net_move. net_move allocates memory for args
+      and starts a thread on send_job. However, args were not getting released
+      in send_job.  TRQ-1199
+  b - Changed pbs_connect to check for a server name. If it is passed in only that
+      server name is tried for a connection. If no server name is given then the 
+      default list is used. The previous behavior was to try the name passed in and
+      the default server list. This would lead to confusion in utilities like qstat
+      when querying for a specific server. If the server specified was no available
+      information from the remaining list would still be returned.
+      TRQ-1143.
+  e - Make issue_Drequest wait for the reply and have functions continue processing
+      immediately after instead of the added overhead of using the threadpool.
+  c - tm_adopt() calls caused pbs_mom to crash. Fix this. TRQ-1210.
+  b - Array element 0 wasn't showing up in qstat -t output. TRQ-1155.
+  b - Cores with multiple processing units were being incorrectly assigned in cpusets.
+      Additionally, multi-node jobs were getting the cpu list from each node in each
+      cpuset, also causing problems. TRQ-1202.
+  b - Finding subjobs (for heterogeneous jobs) wasn't compatible with hostnames that
+      have dashes. TRQ-1229.
+  b - Removed the call to wait_request the main_loop on pbs_server. All of our communication
+      is handled directly and there is no longer a need to wait for an out of band
+      reply from a client. TRQ-1161.
+  e - Modfied output for qstat -r. Expanded Req'd Time to include seconds and centered Elap Time
+      over it's column.
+  b - Fixed a bug found at Univ. of Michigan where a corrupt .JB file would cause
+      pbs_server to seg-fault and restart.
+  b - Don't leave quotes on any arguments passed to the resource list. TRQ-1209.
+  b - Fix a race condition that causes deadlock when two threads are routing the same job.
+  b - Fixed a bug with qsub where environment variables were not getting populated with the 
+      -v option. TRQ-1228.
+  b - This time for sure. TRQ-1228. When max_queuable or max_user_queuable were set it
+      was still possible to go over the limit. This was because a job is qualified
+      in the call to req_quejob but does not get inserted into the queue until svr_enquejob
+      is called in req_commit, four network requests later. In a multi-threaded environment
+      this allowed several jobs to be qualified and put in the pipeline before they
+      were actually commited to a queue.
+  b - If max_user_queuable or max_queuable were set on a queue TORQUE would not honor
+      the limit when filling those queues from a routing queue. This has now
+      been fixed. TRQ-1088.
+  b - Fixed seg-fault when running jobs asynchronously. TRQ-1252.
+  b - Fixed a bug with SIGHUP to pbs_server. The signal handler (change_logs()) does file I/O
+      which is not allowed for signal interruption. This caused pbs_server to be up but
+      unresponsive to any commands. TRQ-1250 and TR!-1224
+  b - Job dependencies didn't work with display_server_suffix=false. Fixed. TRQ-1255.
+  b - Don't report alps reservation ids if a node is in interactive mode. TRQ-1251.
+  b - Only attempt to cancel an orphaned alps reservation a maximum of one time per
+      iteration. TRQ-1251.
+  b - Fix a deadlock when recording an alps reservation on the server side. Cray only. 
+      TRQ-1272.
+  c - Fix mismanagement of the ji_globid. TRQ-1262.
+  c - Setting display_job_server_suffix=false crashed with job arrays. Fixed. bugzilla #216
+  b - Restore the asynchronous functionality. TRQ-1284.
+  e - Made it so pbs_server will come up even if a job cannot recover because of a missing
+      job dependency. TRQ-1287
+  b - Fixed a segfault in the path from do_tcp to tm_request to tm_eof. In this path we freed
+      the tcp channel three times. the call to DIS_tcp_cleanup was removed from tm_eof and
+      tm_request. TRQ-1232.
+  b - Fix a deadlock in logging when the machine is out of disk space. TRQ-1302.
+  b - Fixed a deadlock which occurs when there is a job with a dependency that is being moved 
+      from a routing queue to an execution queue. TRQ-1294
+  e - Retry cleanup with the mom every 20 seconds for jobs that are stuck in an exiting state.
+      TRQ-1299.
+  b - Enabled qsub filters to be access from a non-default location.i TRQ-1127
+  b - Put the ability to write the resources_used data to the accounting logs. This was in 4.1.1 
+      and 4.1.2 but failed to make it into 4.1.3. TRQ-1329
+  c - Fix a double free if the same chan is stored on two tasks for a job. TRQ-1299.
+  b - Changed pbs_original_connect to retry a failed connect attempt 
+      MAX_RETRIES (5) times before returning failure. This will
+      reduce the number of client commands that fail due to a connection
+      failure. TRQ-1355
+  b - Fix the proliferation of "Non-digit found where a digit was expected" messages, due
+      to an off-by-one error. TRQ-1230.
+  b - Fixed a deadlock caused by queue not getting released when jobs are aborted when
+      moving jobs from a routing queue to an execution queue. TRQ-1344.
+
+4.1.2
+  e - Add the ability to run a single job partially on CRAY hardware and partially
+      on hardware external to the CRAY in order to allow visualization of 
+      large simulations.
+
 4.1.1
   e - pbs_server will now detect and release orphaned ALPS reservations
   b - Fixed a deadlock with nodes in stream_eof after call to svr_connect.
@@ -27,6 +205,33 @@ c - crash     b - bug fix    e - enhancement    f - new feature  n - note
       a value.
   b - fix an error in parsing environment variables with commas, newlines, etc. TRQ-1113
   b - fixed a deadlock with array jobs running simultaneously with qstat. 
+  b - Fixed qsub -v option. Variable list was not getting passed in to job environment.
+      TRQ-1128
+  b - TRQ-1116. mail is now sent on job start again.
+  b - TRQ-1118. Cray jobs are now recovered correctly after a restart.
+  b - TRQ-1109. Fixed x11 forwarding for interactive jobs. (qsub -I -X). Previous to
+      this fix interactive jobs would not run any x applications such as xterm, xclock,
+      etc.
+  b - TRQ-1161, Fixes a problem where TORQUE gets into a high CPU utilization condition.
+      The problem was that in the function process_pbs_server_port there was not
+      error returned if the call to getpeername() failed in the default case.
+  b - TRQ-1161. This fixes another case that would cause a thread to spin on poll
+      in start_process_pbs_server_port. A call to the dis function would return
+      and error but the code would close the connection and return the error code which
+      was a value less than 20. start_process_pbs_server_port did not recognize the low
+      error code value and would keep calling into process_pbs_server_port.
+  b - qdel'ing a running job in the cray environment was trying to communicate with the
+      cray compute instead of the login node. This is now fixed. TRQ-1184.
+  b - TRQ-1161. Fixed a problem in stream_eof where a svr_connect was used to connect
+      to a MOM to see if it was still there. On successful connection the connection
+      is closed but the wrong function (close_conn) with the wrong argument (the
+      handle returned by svr_connect()) was used. Replaced with svr_disconnect
+  b - Make it so that procct is never shown to Moab or users. TRQ-872.
+  b - TRQ-1182. Fixed a problem where jobs with dependencies were deleted on
+      the restart of pbs_server.
+  b - TRQ-1199. Fixed memory leaks found by Valgrind. Fixed a leak when routing jobs
+      to a remote server, memory leak with procct, memory leak creating queues, 
+      memory leak with mom_server_valid_message_source and a memory leak in req_track.
 
 4.1.0
   e - make free_nodes() only look at nodes in the exec_host list and not examine

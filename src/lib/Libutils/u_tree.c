@@ -24,6 +24,10 @@ static int Max( int right_side, int left_side )
 static NodeEntry single_rotate_with_left( NodeEntry K2 )
   {
   NodeEntry K1;
+
+  if ((K2 == NULL) ||
+      (K2->left == NULL))
+    return(K2);
   
   K1 = K2->left;
   K2->left = K1->right;
@@ -311,7 +315,7 @@ AvlTree AVL_delete_node(
       if (tree->right)
         {
         h1 = AVL_delete_node(key, port, tree->right);
-        tree->left = h1;
+        tree->right = h1;
         }
       return(tree);
       }

@@ -119,7 +119,7 @@ int        default_checkpoint_interval = 10; /* minutes */
 extern char *mk_dirs(char *);
 extern void set_attr(struct attrl **, char *, char *);
 extern int write_nodes_to_file(job *);
-extern int write_gpus_to_file(job *);
+extern int write_attr_to_file(job *, int, char *);
 
 int create_missing_files(job *pjob);
 
@@ -321,11 +321,11 @@ mom_checkpoint_set_checkpoint_interval(char *value)  /* I */
 
 
 
-unsigned long
-mom_checkpoint_set_checkpoint_script(char *value)  /* I */
+unsigned long mom_checkpoint_set_checkpoint_script(
+    
+  char *value)  /* I */
 
   {
-
   struct stat sbuf;
 
   log_record(
@@ -341,7 +341,7 @@ mom_checkpoint_set_checkpoint_script(char *value)  /* I */
     return(0);  /* error */
     }
 
-  strncpy(checkpoint_script_name, value, sizeof(checkpoint_script_name));
+  snprintf(checkpoint_script_name, sizeof(checkpoint_script_name), "%s", value);
 
   return(1);
   }  /* END set_checkpoint_script() */
@@ -350,11 +350,11 @@ mom_checkpoint_set_checkpoint_script(char *value)  /* I */
 
 
 
-unsigned long
-mom_checkpoint_set_restart_script(char *value)  /* I */
+unsigned long mom_checkpoint_set_restart_script(
+    
+  char *value)  /* I */
 
   {
-
   struct stat sbuf;
 
   log_record(
@@ -370,7 +370,7 @@ mom_checkpoint_set_restart_script(char *value)  /* I */
     return(0);  /* error */
     }
 
-  strncpy(restart_script_name, value, sizeof(restart_script_name));
+  snprintf(restart_script_name, sizeof(restart_script_name), "%s", value);
 
   return(1);
   }  /* END set_restart_script() */
@@ -379,11 +379,11 @@ mom_checkpoint_set_restart_script(char *value)  /* I */
 
 
 
-unsigned long
-mom_checkpoint_set_checkpoint_run_exe_name(char *value)  /* I */
+unsigned long mom_checkpoint_set_checkpoint_run_exe_name(
+    
+  char *value)  /* I */
 
   {
-
   struct stat sbuf;
 
   log_record(
@@ -399,7 +399,7 @@ mom_checkpoint_set_checkpoint_run_exe_name(char *value)  /* I */
     return(0);  /* error */
     }
 
-  strncpy(checkpoint_run_exe_name, value, sizeof(checkpoint_run_exe_name));
+  snprintf(checkpoint_run_exe_name, sizeof(checkpoint_run_exe_name), "%s", value);
 
   return(1);
   }  /* END set_checkpoint_run_exe() */
@@ -774,8 +774,8 @@ void mom_checkpoint_recover(
     */
 
     get_jobs_default_checkpoint_dir(pjob->ji_qs.ji_fileprefix, path);
-    strncpy(oldp, path, MAXPATHLEN);
-    strncat(oldp, ".old", MAXPATHLEN);
+    snprintf(oldp, sizeof(oldp), "%s", path);
+    strncat(oldp, ".old", sizeof(oldp) - strlen(oldp) - 1);
 
     if (stat(oldp, &statbuf) == 0)
       {
@@ -1880,12 +1880,22 @@ int blcr_restart_job(
 
     if (is_login_node == TRUE)
       {
+      int       use_nppn = TRUE;
+      resource *pres = find_resc_entry(
+                         &pjob->ji_wattr[JOB_ATR_resource],
+                         find_resc_def(svr_resc_def, "procs", svr_resc_size));
+     
+      if ((pres != NULL) &&
+          (pres->rs_value.at_val.at_long != 0))
+        use_nppn = FALSE;
+
       if (create_alps_reservation(pjob->ji_wattr[JOB_ATR_exec_host].at_val.at_str,
             pjob->ji_wattr[JOB_ATR_job_owner].at_val.at_str,
             pjob->ji_qs.ji_jobid,
             apbasil_path,
             apbasil_protocol,
             pagg,
+            use_nppn,
             &rsv_id) != PBSE_NONE)
         {
         snprintf(log_buffer, sizeof(log_buffer),
@@ -1945,12 +1955,20 @@ int mom_restart_job(
   int            tcount = 0;
   long  mach_restart(task *, char *path);
 
+  if (pjob->ji_wattr[JOB_ATR_checkpoint_dir].at_val.at_str != NULL)
+    snprintf(path, sizeof(path), "%s", pjob->ji_wattr[JOB_ATR_checkpoint_dir].at_val.at_str);
+  else
+    {
+    /* we can't do anything if there's no checkpoint directory specified here */
+    return(PBSE_RMEXIST);
+    }
+
   get_jobs_default_checkpoint_dir(pjob->ji_qs.ji_fileprefix, namebuf);
 
   if ((dir = opendir(path)) == NULL)
     {
     sprintf(log_buffer, "opendir %s",
-            path);
+      path);
 
     log_err(errno, __func__, log_buffer);
 
@@ -2219,7 +2237,12 @@ int mom_checkpoint_start_restart(
           return(FAILURE);
           }
 
-	      if (write_gpus_to_file(pjob) == -1)
+	      if (write_attr_to_file(pjob, JOB_ATR_exec_gpus, "gpu") == -1)
+          {
+          return(FAILURE);
+          }
+	      
+        if (write_attr_to_file(pjob, JOB_ATR_exec_mics, "mic") == -1)
           {
           return(FAILURE);
           }
@@ -2316,7 +2339,7 @@ int create_missing_files(
 
     if (access(namebuf, F_OK) != 0)
       {
-      if ((fd = creat(namebuf, S_IRUSR | S_IWUSR)) > 0)
+      if ((fd = creat(namebuf, S_IRUSR | S_IWUSR)) >= 0)
         {
         if (fchown(fd,  pjob->ji_qs.ji_un.ji_momt.ji_exuid, pjob->ji_qs.ji_un.ji_momt.ji_exgid) == -1)
           {
@@ -2352,7 +2375,7 @@ int create_missing_files(
 
     if (access(namebuf, F_OK) != 0)
       {
-      if ((fd = creat(namebuf, S_IRUSR | S_IWUSR)) > 0)
+      if ((fd = creat(namebuf, S_IRUSR | S_IWUSR)) >= 0)
         {
         if (fchown(fd,  pjob->ji_qs.ji_un.ji_momt.ji_exuid, pjob->ji_qs.ji_un.ji_momt.ji_exgid) == -1)
           {
@@ -2369,10 +2392,9 @@ int create_missing_files(
       }
 
     free(namebuf);
-
     }
 
   return files_created;
-  }
+  } /* END create_missing_files() */
 
 

@@ -25,7 +25,7 @@ int main(
   int  port2 = 0;
   char server_out1[MAXSERVERNAME+1];
   char server_out2[MAXSERVERNAME+1];
-  char svrtmp[MAXSERVERNAME+1];
+  char svrtmp[MAXSERVERNAME+1] = "";
   int connect;
   int stat = 0;
   int rc = 0;
@@ -41,15 +41,15 @@ int main(
     exit(2);
     }
 
-  strcpy(job_id1, argv[1]);
+  snprintf(job_id1, sizeof(job_id1), "%s", argv[1]);
 
-  strcpy(job_id2, argv[2]);
+  snprintf(job_id2, sizeof(job_id2), "%s", argv[2]);
 
   svrtmp[0] = '\0';
 
   initialize_network_info();
 
-  if (get_server(job_id1, job_id1_out, svrtmp))
+  if (get_server(job_id1, job_id1_out, sizeof(job_id1_out), svrtmp, sizeof(svrtmp)))
     {
     fprintf(stderr, "qorder: illegally formed job identifier: %s\n",
             job_id1);
@@ -89,7 +89,7 @@ int main(
 
   svrtmp[0] = '\0';
 
-  if (get_server(job_id2, job_id2_out, svrtmp))
+  if (get_server(job_id2, job_id2_out, sizeof(job_id2_out), svrtmp, sizeof(svrtmp)))
     {
     fprintf(stderr, "qorder: illegally formed job identifier: %s\n",
             job_id2);
@@ -143,7 +143,13 @@ int main(
     {
     local_errno = -1 * connect;
 
-    fprintf(stderr, "qorder: cannot connect to server %s (errno=%d) %s\n",
+    if (svrtmp[0] != 0)
+      fprintf(stderr, "qorder: cannot connect to server %s (errno=%d) %s\n",
+            svrtmp,
+            local_errno,
+            pbs_strerror(local_errno));
+    else
+      fprintf(stderr, "qorder: cannot connect to server %s (errno=%d) %s\n",
             pbs_server,
             local_errno,
             pbs_strerror(local_errno));

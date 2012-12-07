@@ -10,6 +10,9 @@ DIST_SUBDIRS = aix4 aix5 cygwin darwin digitalunix freebsd freebsd5 fujitsu \
 	hpux10 hpux11 irix5 irix6 irix6array linux netbsd solaris5 solaris7 sunos4 \
 	unicos8 unicosmk2
 
+CLEANFILES = *.gcda *.gcno *.gcov
+CLEANFILES += @PBS_MACH@/*.gcda @PBS_MACH@/*.gcno @PBS_MACH@/*.gcov
+
 include_HEADERS = catch_child.h checkpoint.h mom_comm.h mom_main.h mom_process_request.h \
 									mom_server_lib.h prolog.h mom_job_func.h
 
@@ -45,6 +48,14 @@ pbs_mom_SOURCES = catch_child.c mom_comm.c mom_inter.c mom_main.c \
 		   ../server/job_qs_upgrade.c
 if BUILDCPA
 pbs_mom_SOURCES += cray_cpa.c
+endif
+
+if MIC
+pbs_mom_SOURCES += mic.c
+endif
+
+if NVIDIA
+pbs_mom_SOURCES += nvidia.c
 endif
 
 pbs_demux_SOURCES = pbs_demux.c

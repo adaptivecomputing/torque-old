@@ -18,6 +18,7 @@
 
 /* This section is for manipulting function return values */
 #include "test_job_func.h" /* *_SUITE */
+#include "user_info.h"
 int func_num = 0; /* Suite number being run */
 int tc = 0; /* Used for test routining */
 int iter_num = 0;
@@ -38,6 +39,8 @@ struct all_jobs array_summary;
 char *path_jobinfo_log;
 int LOGLEVEL = 0;
 pthread_mutex_t *job_log_mutex;
+
+user_info_holder users;
 
 int array_save(job_array *pa)
   {
@@ -194,7 +197,7 @@ void delete_task(struct work_task *ptask)
   exit(1);
   }
 
-int depend_on_term(job *pjob)
+int depend_on_term(char *job_id)
   {
   fprintf(stderr, "The call to depend_on_term needs to be mocked!!\n");
   exit(1);
@@ -524,7 +527,7 @@ int decode_ll(
 int set_ll(
    
   pbs_attribute *attr, 
-  pbs_attribute *new,
+  pbs_attribute *new_attr,
   enum batch_op  op)
 
   {
@@ -571,7 +574,7 @@ int lock_ji_mutex(job *pjob, const char *id, char *msg, int logging)
   return(0);
   }
 
-int  decrement_queued_jobs(char *user_name)
+int  decrement_queued_jobs(user_info_holder *uih, char *user_name)
   {
   return(0);
   }
@@ -579,7 +582,7 @@ int  decrement_queued_jobs(char *user_name)
 int set_str(
     
   pbs_attribute *attr,
-  pbs_attribute *new,
+  pbs_attribute *new_attr,
   enum batch_op  op)
 
   {
@@ -587,7 +590,7 @@ int set_str(
   char *p;
   size_t nsize;
 
-  nsize = strlen(new->at_val.at_str) + 1; /* length of new string */
+  nsize = strlen(new_attr->at_val.at_str) + 1; /* length of new string */
 
   if ((op == INCR) && (attr->at_val.at_str == NULL))
     op = SET; /* no current string, change INCR to SET */
@@ -604,7 +607,7 @@ int set_str(
         (void)free(attr->at_val.at_str);
       attr->at_val.at_str = new_value;
 
-      (void)strcpy(attr->at_val.at_str, new->at_val.at_str);
+      (void)strcpy(attr->at_val.at_str, new_attr->at_val.at_str);
 
       break;
 
@@ -617,7 +620,7 @@ int set_str(
         return (PBSE_SYSTEM);
 
       strcat(new_value, attr->at_val.at_str);
-      strcat(new_value, new->at_val.at_str);
+      strcat(new_value, new_attr->at_val.at_str);
 
       free(attr->at_val.at_str);
       attr->at_val.at_str = new_value;
@@ -636,7 +639,7 @@ int set_str(
 
       while (p >= attr->at_val.at_str)
         {
-        if (strncmp(p, new->at_val.at_str, (int)nsize) == 0)
+        if (strncmp(p, new_attr->at_val.at_str, (int)nsize) == 0)
           {
           do
             {
@@ -661,3 +664,30 @@ int set_str(
 
   return (0);
   }
+
+
+int lock_ai_mutex(job_array *pa, const char *func_id, char *msg, int logging)
+  {
+  return(0);
+  }
+
+int unlock_ai_mutex(job_array *pa, const char *func_id, char *msg, int logging)
+  {
+  return(0);
+  }
+
+job *svr_find_job(char *jobid, int sub)
+  {
+  return(NULL);
+  }
+
+int remove_job(struct all_jobs *aj, job             *pjob)
+  {
+  return(0);
+  }
+
+int get_jobs_index(struct all_jobs *aj, job             *pjob)
+  {
+  return(0);
+  }
+  

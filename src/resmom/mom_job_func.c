@@ -179,7 +179,6 @@ extern tlist_head svr_newjobs;
 extern tlist_head svr_alljobs;
 
 void nodes_free(job *);
-int TTmpDirName(job *, char *);
 extern int thread_unlink_calls;
 
 extern void MOMCheckRestart(void);
@@ -195,9 +194,10 @@ void tasks_free(
   job *pj)
 
   {
-  task *tp = (task *)GET_NEXT(pj->ji_tasks);
-  obitent *op;
-  infoent *ip;
+  task            *tp = (task *)GET_NEXT(pj->ji_tasks);
+  obitent         *op;
+  infoent         *ip;
+  resizable_array *freed_chans = initialize_resizable_array(30);
 
   while (tp != NULL)
     {
@@ -227,8 +227,13 @@ void tasks_free(
 
     if (tp->ti_chan != NULL)
       {
-      close_conn(tp->ti_chan->sock, FALSE);
-      DIS_tcp_cleanup(tp->ti_chan);
+      if (is_present(freed_chans, tp->ti_chan) == FALSE)
+        {
+        insert_thing(freed_chans, tp->ti_chan);
+        close_conn(tp->ti_chan->sock, FALSE);
+        DIS_tcp_cleanup(tp->ti_chan);
+        }
+        
       tp->ti_chan = NULL;
       }
 
@@ -238,6 +243,8 @@ void tasks_free(
 
     tp = (task *)GET_NEXT(pj->ji_tasks);
     }  /* END while (tp != NULL) */
+
+  free_resizable_array(freed_chans);
 
   return;
   }  /* END tasks_free() */
@@ -482,8 +489,6 @@ job *job_alloc(void)
     return(NULL);
     }
 
-  memset(pj, 0 ,sizeof(job));
-
   pj->ji_qs.qs_version = PBS_QS_VERSION;
 
   CLEAR_LINK(pj->ji_alljobs);
@@ -549,10 +554,10 @@ void mom_job_free(
     pj->ji_resources = NULL;
     }
 
-  if (pj->ji_globid)
+  if (pj->ji_sister_vnods)
     {
-    free(pj->ji_globid);
-    pj->ji_globid = NULL;
+    free(pj->ji_sister_vnods);
+    pj->ji_sister_vnods = NULL;
     }
 
   /* now free the main structure */
@@ -678,14 +683,14 @@ void *delete_job_files(
 #endif /* PENABLE_LINUX26_CPUSETS */
 
   /* delete the node file and gpu file */
-  if (jfdi->has_node_file == TRUE)
-    {
-    sprintf(namebuf,"%s/%s", path_aux, jfdi->jobid);
-    unlink(namebuf);
-
-    sprintf(namebuf, "%s/%sgpu", path_aux, jfdi->jobid);
-    unlink(namebuf);
-    } /* END code to delete node and gpu files */
+  sprintf(namebuf,"%s/%s", path_aux, jfdi->jobid);
+  unlink(namebuf);
+  
+  sprintf(namebuf, "%s/%sgpu", path_aux, jfdi->jobid);
+  unlink(namebuf);
+  
+  sprintf(namebuf, "%s/%smic", path_aux, jfdi->jobid);
+  unlink(namebuf);
 
   /* delete script file */
   if (multi_mom)
@@ -840,14 +845,6 @@ void mom_job_purge(
     }
   else
     jfdi->has_temp_dir = FALSE;
-  
-  if (pjob->ji_flags & MOM_HAS_NODEFILE)
-    {
-    jfdi->has_node_file = TRUE;
-    pjob->ji_flags &= ~MOM_HAS_NODEFILE;
-    }
-  else
-    jfdi->has_node_file = FALSE;
 
   strcpy(jfdi->jobid,pjob->ji_qs.ji_jobid);
   strcpy(jfdi->prefix,pjob->ji_qs.ji_fileprefix);

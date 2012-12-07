@@ -150,6 +150,7 @@ typedef struct resend_momcomm
   {
   enum momcomm_type  mc_type;
   void              *mc_struct;
+  int                resend_attempts;
   } resend_momcomm;
 
 typedef struct im_compose_info
@@ -235,6 +236,7 @@ extern void  state_to_server(int, int);
 extern void  dep_main_loop_cycle(void);
 extern int   message_job(job *, enum job_file, char *);
 extern void  term_job(job *);
+int          TTmpDirName(job *, char *, int);
 
 extern struct passwd *check_pwd(job *);
 extern int   task_save(task *) ;

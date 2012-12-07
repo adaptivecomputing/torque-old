@@ -157,7 +157,7 @@ void *req_movejob(void *vp)
   exit(1);
   }
 
-int unlock_node(struct pbsnode *the_node, char *id, char *msg, int logging)
+int unlock_node(struct pbsnode *the_node, const char *id, char *msg, int logging)
   {
   fprintf(stderr, "The call to unlock_node needs to be mocked!!\n");
   exit(1);
@@ -301,7 +301,7 @@ void *req_modifyarray(void *vp)
   exit(1);
   }
 
-void append_link(tlist_head *head, list_link *new, void *pobj)
+void append_link(tlist_head *head, list_link *new_link, void *pobj)
   {
   fprintf(stderr, "The call to append_link needs to be mocked!!\n");
   exit(1);

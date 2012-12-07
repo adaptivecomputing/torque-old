@@ -378,6 +378,8 @@ enum job_atr
   JOB_ATR_login_node_id,
   JOB_ATR_login_prop,
   JOB_ATR_external_nodes,
+  JOB_ATR_multi_req_alps,
+  JOB_ATR_exec_mics,
 #include "site_job_attr_enum.h"
 
   JOB_ATR_UNKN,  /* the special "unknown" type    */
@@ -572,7 +574,7 @@ struct job
   tlist_head     ji_tasks; /* list of task structs */
   tm_node_id     ji_nodekill; /* set to nodeid requesting job die */
   int            ji_flags; /* mom only flags */
-  char           *ji_globid; /* global job id */
+  char           ji_globid[64]; /* global job id */
   int            ji_portout; /* socket port allocated for ji_stdout */
   int            ji_porterr; /* socket port allocated for ji_stderr */
   int            ji_stdout; /* socket for stdout */
@@ -594,7 +596,7 @@ struct job
   int               ji_lastdest; /* last destin tried by route */
   int               ji_retryok; /* ok to retry, some reject was temp */
   tlist_head        ji_rejectdest; /* list of rejected destinations */
-  struct job_array *ji_arraystruct; /* pointer to job_array for this array */
+  char              ji_arraystructid[PBS_MAXSVRJOBID + 1]; /* id of job array for this job */
   int               ji_is_array_template;    /* set to TRUE if this is a "template job" for a job array*/
   int               ji_have_nodes_request; /* set to TRUE if node spec uses keyword nodes */
   int               ji_cold_restart; /* set to TRUE if this job has been loaded through a cold restart */
@@ -831,7 +833,6 @@ typedef struct job_file_delete_info
   char           prefix[PBS_JOBBASE + 1];
   char          *checkpoint_dir;
   unsigned char  has_temp_dir;
-  unsigned char  has_node_file;
   gid_t          gid;
   uid_t          uid;
   } job_file_delete_info;
@@ -1064,7 +1065,7 @@ extern void  add_dest(job *);
 extern void  depend_clrrdy(job *);
 extern int   depend_on_que(pbs_attribute *, void *, int);
 extern int   depend_on_exec(job *);
-extern int   depend_on_term(job *);
+extern int   depend_on_term(char *);
 job         *find_job_regular_jobs(char *);
 job         *find_job_array_jobs(char *);
 extern char *get_egroup(job *);
@@ -1104,20 +1105,9 @@ extern int   svr_chk_owner(struct batch_request *, job *);
 extern struct batch_request *cpy_stage(struct batch_request *, job *, enum job_atr, int);
 extern struct batch_request *setup_cpyfiles(struct batch_request *, job *, char *, char *, int, int);
 extern struct batch_request *cpy_checkpoint(struct batch_request *, job *, enum job_atr, int);
+int   issue_signal(job **, char *, void(*)(struct work_task *), void *);
 #endif /* BATCH_REQUEST_H */
 
-#ifdef QUEUE_H
-extern int   count_user_queued_jobs(pbs_queue *,char *);
-extern int   svr_chkque(job *, pbs_queue *, char *, int, char *);
-extern int   default_router(job *, pbs_queue *, long);
-extern int   site_alt_router(job *, pbs_queue *, long);
-extern int   site_acl_check(job *, pbs_queue *);
-extern void  set_chkpt_deflt(job *, pbs_queue *);
-#endif /* QUEUE_H */
-
-#ifdef WORK_TASK_H
-int   issue_signal(job **, char *, void(*)(struct work_task *), void *);
-#endif /* WORK_TASK_H */
 
 #endif /* PBS_JOB_H */
 

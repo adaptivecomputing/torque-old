@@ -138,6 +138,8 @@
 #include "net_connect.h" /* set_localhost_name */
 #include "tcp.h" /* tcp_chan */
 #include "ji_mutex.h"
+#include "job_route.h" /* queue_route */
+#include "exiting_jobs.h"
 
 #define TASK_CHECK_INTERVAL    10
 #define HELLO_WAIT_TIME        600
@@ -153,7 +155,6 @@ extern void tcp_settimeout(long);
 extern void poll_job_task(struct work_task *);
 extern int  schedule_jobs(void);
 extern int  notify_listeners(void);
-extern void queue_route(pbs_queue *);
 extern void svr_shutdown(int);
 extern void acct_close(void);
 extern int  svr_startjob(job *, struct batch_request *, char *, char *);
@@ -187,10 +188,16 @@ extern hello_container failures;
 extern int             svr_chngNodesfile;
 extern int             svr_totnodes;
 extern struct all_jobs alljobs;
+extern int run_change_logs;
+
+extern pthread_mutex_t *poll_job_task_mutex;
+extern int max_poll_job_tasks;
 
 /* External Functions */
 
 extern int    recov_svr_attr (int);
+extern void  change_logs_handler(int);
+extern void  change_logs();
 
 /* Local Private Functions */
 
@@ -251,7 +258,7 @@ int                     queue_rank = 0;
 int                     a_opt_init = -1;
 int                     wait_for_moms_hierarchy = FALSE;
 
-int                     route_retry_interval = 10; /* time in seconds to check routing queues */
+int                     route_retry_interval = 5; /* time in seconds to check routing queues */
 /* HA global data items */
 long                    HALockCheckTime = 0;
 long                    HALockUpdateTime = 0;
@@ -271,7 +278,7 @@ char                    server_name[PBS_MAXSERVERNAME + 1]; /* host_name[:servic
 int                     svr_do_schedule = SCH_SCHEDULE_NULL;
 pthread_mutex_t        *svr_do_schedule_mutex;
 pthread_mutex_t        *check_tasks_mutex;
-extern all_queues       svr_queues;
+pthread_mutex_t        *reroute_job_mutex;
 extern int              listener_command;
 extern hello_container  hellos;
 extern hello_container  failures;
@@ -383,14 +390,15 @@ int process_pbs_server_port(
   int is_scheduler_port)
  
   {
-  int          proto_type;
-  int          rc = PBSE_NONE;
-  int          version;
-  char         log_buf[LOCAL_LOG_BUF_SIZE];
+  int              proto_type;
+  int              rc = PBSE_NONE;
+  int              version;
+  char             log_buf[LOCAL_LOG_BUF_SIZE];
   struct tcp_chan *chan = NULL;
    
   if ((chan = DIS_tcp_setup(sock)) == NULL)
     {
+    return(PBSE_MEM_MALLOC);
     }
 
   proto_type = disrui_peek(chan,&rc);
@@ -410,7 +418,7 @@ int process_pbs_server_port(
       if (rc != DIS_SUCCESS)
         {
         log_err(-1,  __func__, "Cannot read version - skipping this request.\n");
-        close_conn(sock,FALSE);
+        rc = PBSE_SOCKET_CLOSE; 
         break;
         }
       
@@ -428,17 +436,7 @@ int process_pbs_server_port(
         {
         addr = (struct sockaddr_in *)&s_addr;
         
-        if (chan->IsTimeout == 1)
-          {
-          if(LOGLEVEL >= 8)
-            {
-            snprintf(log_buf, sizeof(log_buf), "poll timed out  waiting for %s. Will try again", netaddr(addr));
-            log_event(PBSEVENT_SYSTEM, PBS_EVENTCLASS_REQUEST, __func__, log_buf);
-            }
-          rc = PBSE_NONE;
-          }
-
-        else if (proto_type == 0)
+        if (proto_type == 0)
           {
           /* 
            * Don't log error if close is on scheduler port.  Scheduler is
@@ -453,6 +451,7 @@ int process_pbs_server_port(
               log_event(PBSEVENT_SYSTEM, PBS_EVENTCLASS_REQUEST, __func__, log_buf);
               }
             }
+
           rc = PBSE_SOCKET_CLOSE;
           }
         else
@@ -463,6 +462,8 @@ int process_pbs_server_port(
           rc = PBSE_SOCKET_DATA;
           }
         }
+      else
+        rc = PBSE_SOCKET_CLOSE;
 
       break;
       }
@@ -493,8 +494,12 @@ void process_pbs_server_port_scheduler(
   int rc = PBSE_NONE;
   int sock = *new_sock;
 
-  while ((rc != PBSE_SOCKET_DATA) && (rc != PBSE_SOCKET_INFORMATION)
-        && (rc != PBSE_INTERNAL) && (rc != PBSE_SYSTEM)  && (rc != PBSE_SOCKET_CLOSE))
+  while ((rc != PBSE_SOCKET_DATA) && 
+         (rc != PBSE_SOCKET_INFORMATION) &&
+         (rc != PBSE_INTERNAL) &&
+         (rc != PBSE_SYSTEM) &&
+         (rc != PBSE_MEM_MALLOC) &&
+         (rc != PBSE_SOCKET_CLOSE))
     {
     netcounter_incr();
     rc = process_pbs_server_port(sock, TRUE);
@@ -528,6 +533,7 @@ void *start_process_pbs_server_port(
          (rc != PBSE_SOCKET_INFORMATION) &&
          (rc != PBSE_INTERNAL) &&
          (rc != PBSE_SYSTEM) &&
+         (rc != PBSE_MEM_MALLOC) &&
          (rc != PBSE_SOCKET_CLOSE))
     {
     netcounter_incr();
@@ -677,8 +683,8 @@ void parse_command_line(
 
         if (!strcmp(optarg, "version"))
           {
-          fprintf(stderr, "version: %s\n",
-                  PACKAGE_VERSION);
+          fprintf(stderr, "Version: %s\nRevision: %s \n",
+            PACKAGE_VERSION, SVN_VERSION);
 
           exit(0);
           }
@@ -796,11 +802,11 @@ void parse_command_line(
                 "unable to determine full hostname for specified server host '%s' - %s",
                 server_host, EMsg);
 
-            log_err(-1, "pbsd_main", tmpLine);
+            log_err(-1, __func__, tmpLine);
             }
           else
             {
-            log_err(-1, "pbsd_main", "unable to determine full server hostname");
+            log_err(-1, __func__, "unable to determine full server hostname");
             }
 
           exit(1);
@@ -1150,6 +1156,7 @@ void *handle_queue_routing_retries(
 
   {
   pbs_queue *pque;
+  char       *queuename;
   int        iter = -1;
 
   while(1)
@@ -1158,7 +1165,10 @@ void *handle_queue_routing_retries(
     while ((pque = next_queue(&svr_queues, &iter)) != NULL)
       {
       if (pque->qu_qs.qu_type == QTYPE_RoutePush)
-        queue_route(pque);
+        {
+        queuename = strdup(pque->qu_qs.qu_name); /* make sure this gets freed inside queue_route */
+        enqueue_threadpool_request(queue_route, queuename);
+        }
 
       unlock_queue(pque, __func__, NULL, 0);
       }
@@ -1204,6 +1214,7 @@ void start_accept_thread()
 
   {
   pthread_attr_t accept_attr;
+  accept_thread_id = -1;
   if ((pthread_attr_init(&accept_attr)) != 0)
     {
     perror("pthread_attr_init failed. Could not start accept thread");
@@ -1216,7 +1227,6 @@ void start_accept_thread()
     }
   else if ((pthread_create(&accept_thread_id, &accept_attr, start_accept_listener, NULL)) != 0)
     {
-    accept_thread_id = -1;
     perror("could not start listener for pbs_server");
     log_err(-1, msg_daemonname, "Failed to start listener for pbs_server");
     }
@@ -1231,19 +1241,45 @@ void start_routing_retry_thread()
   if ((pthread_attr_init(&routing_attr)) != 0)
     {
     perror("pthread_attr_init failed. Could not start accept thread");
-    log_err(-1, msg_daemonname,"pthread_attr_init failed. Could not start accept thread");
+    log_err(-1, msg_daemonname,"pthread_attr_init failed. Could not start handle_queue_routing_retries");
     }
   else if ((pthread_attr_setdetachstate(&routing_attr, PTHREAD_CREATE_DETACHED) != 0))
     {
     perror("pthread_attr_setdetatchedstate failed. Could not start accept thread");
-    log_err(-1, msg_daemonname,"pthread_attr_setdetachedstate failed. Could not start accept thread");
+    log_err(-1, msg_daemonname,"pthread_attr_setdetachedstate failed. Could not start handle_queue_routing_retries");
     }
   else if ((pthread_create(&route_retry_thread_id, &routing_attr, handle_queue_routing_retries, NULL)) != 0)
     {
     perror("could not start listener for pbs_server");
-    log_err(-1, msg_daemonname, "Failed to start listener for pbs_server");
+    log_err(-1, msg_daemonname, "Failed to start handle_queue_routing_retries");
     }
   } /* END start_routing_retry_thread() */
+
+
+
+
+void start_exiting_retry_thread()
+
+  {
+  pthread_attr_t attr;
+  pthread_t      exiting_thread;
+
+  if (pthread_attr_init(&attr) != 0)
+    {
+    perror("pthread_attr_init failed. Could not start exiting retry thread");
+    log_err(-1, msg_daemonname,"pthread_attr_init failed. Could not start inspect_exiting_jobs");
+    }
+  else if (pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED) != 0)
+    {
+    perror("pthread_attr_setdetatchedstate failed. Could not start exiting retry thread");
+    log_err(-1, msg_daemonname,"pthread_attr_setdetachedstate failed. Could not start inspect_exiting_jobs");
+    }
+  else if (pthread_create(&exiting_thread, &attr, inspect_exiting_jobs, NULL) != 0)
+    {
+    perror("could not start exiting job retry thread for pbs_server");
+    log_err(-1, msg_daemonname, "Failed to start inspect_exiting_jobs");
+    }
+  } /* END start_exiting_retry_thread() */
 
 
 
@@ -1363,6 +1399,7 @@ void main_loop(void)
 
   start_accept_thread();
   start_routing_retry_thread();
+  start_exiting_retry_thread();
 
   while (state != SV_STATE_DOWN)
     {
@@ -1371,6 +1408,9 @@ void main_loop(void)
 
     monitor_accept_thread();
     monitor_route_retry_thread();
+
+    if (run_change_logs == TRUE)
+      change_logs();
 
     if (try_hellos <= time_now)
       send_any_hellos_needed();
@@ -1444,11 +1484,6 @@ void main_loop(void)
         }
       }
 
-    /* wait for a request and process it */
-    if (wait_request(waittime, &state) != 0)
-      {
-      log_err(-1, msg_daemonname, "wait_request failed");
-      }
 
     if (plogenv == NULL)
       {
@@ -1707,6 +1742,14 @@ int main(
     {
     return(1);
     }
+  
+  if ((check_network_port(pbs_server_port_dis) != PBSE_NONE) &&
+      (!high_availability_mode))
+    {
+    perror("pbs_server port already bound");
+
+    exit(3);
+    }
 
   /* With multi-threaded TORQUE we need to ask confirmation for
      RECOV_CREATE and RECOV_COLD before we daemonize the server */
@@ -1870,7 +1913,7 @@ int main(
   /* initialize the server objects and perform specified recovery */
   /* will be left in the server's private directory  */
   /* NOTE:  env cleared in pbsd_init() */
-  if (pbsd_init(server_init_type) != 0)
+  if (pbsd_init(server_init_type) != PBSE_NONE)
     {
     log_err(-1, msg_daemonname, "pbsd_init failed");
 
@@ -1892,15 +1935,6 @@ int main(
     log_buf);
 
 
-  if (check_network_port(pbs_server_port_dis) != 0)
-    {
-    perror("pbs_server: network");
-
-    log_err(-1, msg_daemonname, "pbs_server port already bound");
-
-    exit(3);
-    }
-
   if (init_network(0, start_process_pbs_server_port) != 0)
     {
     perror("pbs_server: unix domain socket");
@@ -1910,6 +1944,22 @@ int main(
     exit(3);
     }
 
+  /* poll_job_task uses a mutex to protect a counter
+     that prevents the number of poll job tasks from
+     consuming all available threads */
+  poll_job_task_mutex = (pthread_mutex_t *)calloc(1, sizeof(pthread_mutex_t));
+  if (poll_job_task_mutex == NULL)
+    {
+    perror("pbs_server: failed to initialize poll_job_task_mutex");
+    log_err(-1, msg_daemonname, "pbs_server: failed to initialize poll_job_task_mutex");
+    exit(3);
+    }
+
+  pthread_mutex_init(poll_job_task_mutex, NULL);
+
+  max_poll_job_tasks = (int)(request_pool->tp_max_threads * 0.7) - 5;
+  if (max_poll_job_tasks <= 0)
+    max_poll_job_tasks = 1;
 
 #if (PLOCK_DAEMONS & 1)
   plock(PROCLOCK);
@@ -2243,9 +2293,9 @@ int is_ha_lock_file_valid(
 
   {
   char        LockDir[MAX_PATH_LEN];
-  char        ErrorString[MAX_LINE];
   struct stat Stat;
   bool_t      GoodPermissions = FALSE;
+  char        log_buf[LOCAL_LOG_BUF_SIZE];
 
   if (HALockFile[0] == '\0')
     {
@@ -2261,11 +2311,11 @@ int is_ha_lock_file_valid(
     /* stat failed */
     tmpLine = strerror(errno);
 
-    snprintf(tmpLine,sizeof(tmpLine),"could not stat the lockfile dir '%s': %s",
+    snprintf(log_buf, sizeof(log_buf), "could not stat the lockfile dir '%s': %s",
       LockDir,
-      ErrorString);
+      tmpLine);
 
-    log_err(errno, __func__, tmpLine);
+    log_err(errno, __func__, log_buf);
 
     return(FALSE);
     }
@@ -2592,6 +2642,7 @@ int start_update_ha_lock_thread()
   if (write(fds,smallBuf,strlen(smallBuf)) != (ssize_t)strlen(smallBuf))
     {
     log_err(-1, __func__, "Couldn't write the pid to the lockfile\n");
+    close(fds);
 
     return(FAILURE);
     }
@@ -2599,7 +2650,12 @@ int start_update_ha_lock_thread()
   /* we don't need an open handle on the lockfile, just correct update times */
   close(fds);
 
-  pthread_attr_init(&HALockThreadAttr);
+  if ((rc = pthread_attr_init(&HALockThreadAttr)) != 0)
+    {
+    perror("pthread_attr_init failed. Could not start update ha lock thread");
+    log_err(-1, msg_daemonname,"pthread_attr_init failed. Could not start ha lock thread");
+    return FAILURE;
+    }
 
   rc = pthread_create(&HALockThread,&HALockThreadAttr,update_ha_lock_thread,NULL);
 

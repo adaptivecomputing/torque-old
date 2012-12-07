@@ -28,7 +28,7 @@ int main(int argc, char **argv) /* qmove */
   char *q_n_out, *s_n_out;
 
   char job_id_out[PBS_MAXCLTJOBID];
-  char server_out[MAXSERVERNAME];
+  char server_out[MAXSERVERNAME] = "";
   char rmt_server[MAXSERVERNAME];
 
   if (argc < 3)
@@ -40,7 +40,7 @@ int main(int argc, char **argv) /* qmove */
 
   initialize_network_info();
 
-  strcpy(destination, argv[1]);
+  snprintf(destination, sizeof(destination), "%s", argv[1]);
 
   if (parse_destination_id(destination, &q_n_out, &s_n_out))
     {
@@ -54,9 +54,9 @@ int main(int argc, char **argv) /* qmove */
     int stat = 0;
     int located = FALSE;
 
-    strcpy(job_id, argv[optind]);
+    snprintf(job_id, sizeof(job_id), "%s", argv[optind]);
 
-    if (get_server(job_id, job_id_out, server_out))
+    if (get_server(job_id, job_id_out, sizeof(job_id_out), server_out, sizeof(server_out)))
       {
       fprintf(stderr, "qmove: illegally formed job identifier: %s\n", job_id);
       any_failed = 1;
@@ -71,8 +71,12 @@ cnt:
       {
       any_failed = -1 * connect;
 
-      fprintf(stderr, "qmove: cannot connect to server %s (errno=%d) %s\n",
-        pbs_server, any_failed, pbs_strerror(any_failed));
+      if (server_out[0] != 0)
+        fprintf(stderr, "qmove: cannot connect to server %s (errno=%d) %s\n",
+          server_out, any_failed, pbs_strerror(any_failed));
+      else
+        fprintf(stderr, "qmove: cannot connect to server %s (errno=%d) %s\n",
+          pbs_server, any_failed, pbs_strerror(any_failed));
       continue;
       }
 

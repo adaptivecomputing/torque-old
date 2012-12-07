@@ -710,9 +710,7 @@ void dep_initialize(void)
 void dep_cleanup(void)
 
   {
-  char *id = "dep_cleanup";
-
-  log_record(PBSEVENT_SYSTEM, 0, id, "dependent cleanup");
+  log_record(PBSEVENT_SYSTEM, 0, __func__, "dependent cleanup");
 
   if (pdir)
     {
@@ -1899,7 +1897,7 @@ int mom_get_sample(void)
 
       hold = (proc_stat_t *)realloc(proc_array, (max_proc + 1) * sizeof(proc_stat_t));
 
-      if (proc_array == NULL)
+      if (hold == NULL)
         {
         log_err(errno, id, "unable to realloc space for proc_array sample");
 
@@ -3650,7 +3648,8 @@ char *nusers(
 
           return(NULL);
           }
-        memset(hold+((maxuid-100)*sizeof(uid_t)), 0, 100*sizeof(uid_t));
+
+        memset(hold+(maxuid-100), 0, 100*sizeof(uid_t));
 
         if (LOGLEVEL >= 7)
           {
@@ -4233,9 +4232,10 @@ void scan_non_child_tasks(void)
           pp  = pp->next;
 #else
           
-        rewinddir(pdir);
+        if(pdir != NULL)
+          rewinddir(pdir);
 
-        while ((dent = readdir(pdir)) != NULL)
+        while ((dent = ((pdir == NULL)?NULL:readdir(pdir))) != NULL)
           {
           if (!isdigit(dent->d_name[0]))
             continue;
@@ -4295,7 +4295,8 @@ void scan_non_child_tasks(void)
       }
     }    /* END for (job = GET_NEXT(svr_alljobs)) */
 
-  closedir(pdir);
+  if(pdir != NULL)
+    closedir(pdir);
 
   first_time = FALSE;
 

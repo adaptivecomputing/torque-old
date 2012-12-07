@@ -20,11 +20,11 @@ int disrsi_(
   unsigned         count)
 
   {
-  int  c;
-  unsigned locval;
-  unsigned ndigs;
-  char  *cp;
-  char  scratch[DIS_BUFSIZ+1];
+  int       c;
+  unsigned  locval;
+  unsigned  ndigs;
+  char     *cp = NULL;
+  char      scratch[DIS_BUFSIZ];
 
   if (negate == NULL)
     return DIS_INVALID;
@@ -33,12 +33,12 @@ int disrsi_(
   if (count == 0)
     return DIS_INVALID;
 
-  memset(scratch, 0, DIS_BUFSIZ+1);
+  memset(scratch, 0, sizeof(scratch));
 
   if (dis_umaxd == 0)
     disiui_();
   
-  if (count > DIS_BUFSIZ)
+  if (count > sizeof(scratch) - 1)
     return DIS_INVALID;
 
   switch (c = tcp_getc(chan))
@@ -69,9 +69,7 @@ int disrsi_(
       do
         {
         if (((c = *cp++) < '0') || (c > '9'))
-          {
           return(DIS_NONDIGIT);
-          }
 
         locval = 10 * locval + c - '0';
         }
@@ -140,6 +138,7 @@ int disrsi_(
       break;
 
     default:
+
       return(DIS_NONDIGIT);
       break;
     }

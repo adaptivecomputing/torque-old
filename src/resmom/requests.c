@@ -144,7 +144,6 @@ extern int mkdirtree(
     char *dirpath, /* I */
     mode_t mode);
 
-extern int TTmpDirName(job*, char *);
 extern int TMOMJobGetStartInfo(job *, pjobexec_t **) ;
 
 #endif /* HAVE_WORDEXP */
@@ -299,13 +298,13 @@ static pid_t fork_to_user(
     if ((pwdp = getpwnam_ext(preq->rq_ind.rq_cpyfile.rq_user)) == NULL)
       {
       if (MOMUNameMissing[0] == '\0')
-        strncpy(MOMUNameMissing, preq->rq_ind.rq_cpyfile.rq_user, 64);
+        snprintf(MOMUNameMissing, 64, "%s", preq->rq_ind.rq_cpyfile.rq_user);
 
       sprintf(log_buffer, "cannot find user '%s' in password file",
               preq->rq_ind.rq_cpyfile.rq_user);
 
       if (EMsg != NULL)
-        strncpy(EMsg, log_buffer, 1024);
+        snprintf(EMsg, 1024, "%s", log_buffer);
 
       log_err(errno, __func__, log_buffer);
 
@@ -329,7 +328,7 @@ static pid_t fork_to_user(
               preq->rq_ind.rq_cpyfile.rq_user);
 
       if (EMsg != NULL)
-        strncpy(EMsg, log_buffer, 1024);
+        snprintf(EMsg, 1024, "%s", log_buffer);
 
       log_err(errno, __func__, log_buffer);
 
@@ -362,7 +361,7 @@ static pid_t fork_to_user(
     log_err(PBSE_UNKRESC, __func__, "cannot determine home directory");
 
     if (EMsg != NULL)
-      strncpy(EMsg, "cannot determine home directory", 1024);
+      snprintf(EMsg, 1024, "%s", "cannot determine home directory");
 
     return(-PBSE_UNKRESC);
     }
@@ -387,7 +386,7 @@ static pid_t fork_to_user(
       }
 
     if (EMsg != NULL)
-      strncpy(EMsg, log_buffer, 1024);
+      snprintf(EMsg, 1024, "%s", log_buffer);
 
     /* NOTE:  warn only, root may not be able to stat directory */
 
@@ -401,7 +400,7 @@ static pid_t fork_to_user(
     log_err(PBSE_UNKRESC, __func__, log_buffer);
 
     if (EMsg != NULL)
-      strncpy(EMsg, log_buffer, 1024);
+      snprintf(EMsg, 1024, "%s", log_buffer);
 
     return(-PBSE_UNKRESC);
     }
@@ -436,7 +435,7 @@ static pid_t fork_to_user(
     log_err(-1, __func__, log_buffer);
 
     if (EMsg != NULL)
-      strncpy(EMsg, log_buffer, 1024);
+      snprintf(EMsg, 1024, "%s", log_buffer);
 
     return(-PBSE_SYSTEM);
     }
@@ -513,7 +512,7 @@ static pid_t fork_to_user(
       log_err(-1, __func__, log_buffer);
 
       if (EMsg != NULL)
-        strncpy(EMsg, log_buffer, 1024);
+        snprintf(EMsg, 1024, "%s", log_buffer);
 
       return(-PBSE_SYSTEM);
       }
@@ -535,7 +534,7 @@ static pid_t fork_to_user(
       log_err(-1, __func__, log_buffer);
 
       if (EMsg != NULL)
-        strncpy(EMsg, log_buffer, 1024);
+        snprintf(EMsg, 1024, "%s", log_buffer);
 
       return(-PBSE_SYSTEM);
       }
@@ -608,9 +607,7 @@ static void add_bad_list(
 
 #define RT_BLK_SZ 4096
 
-/* return 0 on failure */
-
-static int return_file(
+int return_file(
 
   job           *pjob,
   enum job_file  which,
@@ -655,7 +652,7 @@ static int return_file(
 
   if (fds < 0)
     {
-    return(0);
+    return(errno);
     }
 
   strcpy(prq->rq_host, mom_host);
@@ -678,6 +675,8 @@ static int return_file(
              (rc = encode_DIS_ReqExtend(chan, NULL)))
       {
       DIS_tcp_cleanup(chan);
+      chan = NULL;
+
       break;
       }
 
@@ -689,15 +688,14 @@ static int return_file(
       rc = -1;
 
       DIS_tcp_cleanup(chan);
+      chan = NULL;
+
       break;
       }
 
     DIS_tcp_cleanup(chan);
     chan = NULL;
     }    /* END while ((amt = read()) */
-
-  if (chan != NULL)
-    DIS_tcp_cleanup(chan);
 
   free_br(prq);
 
@@ -1245,116 +1243,6 @@ void req_checkpointjob(
   }
 
 
-
-
-void req_gpuctrl_mom(
-
-  struct batch_request *preq)  /* I */
-
-  {
-  char *mom_node;
-  char *gpuid;
-  int   gpumode = -1;
-  int   reset_perm = -1;
-  int   reset_vol = -1;
-#ifdef NVIDIA_GPUS
-  int   rc = -1;
-#endif  /* NVIDIA_GPUS */
-
-  gpuid = preq->rq_ind.rq_gpuctrl.rq_gpuid;
-  gpumode = preq->rq_ind.rq_gpuctrl.rq_gpumode;
-  mom_node = preq->rq_ind.rq_gpuctrl.rq_momnode;
-  reset_perm = preq->rq_ind.rq_gpuctrl.rq_reset_perm;
-  reset_vol = preq->rq_ind.rq_gpuctrl.rq_reset_vol;
-
-#ifdef NVIDIA_GPUS
-  if (LOGLEVEL >= 7)
-    {
-    sprintf(
-      log_buffer,
-      "GPU control request for node %s gpuid %s mode %d reset_perm %d reset_vol %d",
-      mom_node,
-      gpuid,
-      gpumode,
-      reset_perm,
-      reset_vol);
-    log_ext(-1, __func__, log_buffer, LOG_INFO);
-    }
-
-  if (!use_nvidia_gpu)
-    {
-    sprintf(
-      log_buffer,
-      "GPU control requests not active: node %s gpuid %s mode %d reset_perm %d reset_vol %d",
-      mom_node,
-      gpuid,
-      gpumode,
-      reset_perm,
-      reset_vol);
-
-    if (LOGLEVEL >= 3)
-      {
-      log_ext(-1, __func__, log_buffer, LOG_INFO);
-      }
-
-    req_reject(PBSE_NOSUP, 0, preq, NULL, NULL);
-    return;
-    }
-
-    /* assume success? */
-
-  if (gpumode != -1)
-    {
-    rc = setgpumode(gpuid, gpumode);
-    }
-  else if ((reset_perm != -1) || (reset_vol != -1))
-    {
-    rc = resetgpuecc(gpuid, reset_perm, reset_vol);
-    }
-
-  if (rc)
-    {
-    reply_ack(preq);
-
-    /*
-     * if we were successful changing the mode then we need to update the gpu
-     * statuses
-     */
-
-    if (gpumode != -1)
-      {
-      send_update_soon();
-      }
-    }
-  else
-    {
-    req_reject(PBSE_RMSYSTEM, 0, preq, mom_host, "failed to set gpu status");
-    }
-#else
-
-  sprintf(log_buffer, "GPU control requests not supported: node %s gpuid %s mode %d reset_perm %d reset_vol %d",
-    mom_node,
-    gpuid,
-    gpumode,
-    reset_perm,
-    reset_vol);
-
-  if (LOGLEVEL >= 3)
-    {
-    log_ext(-1, __func__, log_buffer, LOG_INFO);
-    }
-
-  req_reject(PBSE_NOSUP, 0, preq, NULL, NULL);
-
-#endif  /* NVIDIA_GPUS */
-
-  return;
-  }  /* END req_deletejob() */
-
-
-
-
-
 /*
  *  Write text into a job's output file,
  *  Return a PBS error code.
@@ -1684,7 +1572,7 @@ void req_modifyjob(
       if (newattr[i].at_type == ATR_TYPE_STR)
         {
         if (newattr[i].at_val.at_str != NULL)
-          strncpy(tmpLine, newattr[i].at_val.at_str, sizeof(tmpLine));
+          snprintf(tmpLine, sizeof(tmpLine), "%s", newattr[i].at_val.at_str);
         }
       else if (newattr[i].at_type == ATR_TYPE_LONG)
         {
@@ -1714,7 +1602,7 @@ void req_modifyjob(
                      &newattr[i]);
 
           if (tmpPtr != NULL)
-            strncpy(tmpLine, tmpPtr, sizeof(tmpLine));
+            snprintf(tmpLine, sizeof(tmpLine), "%s", tmpPtr);
           }
         else
           {
@@ -1932,7 +1820,7 @@ int sigalltasks_sisters(
 
   for (i = 0;i < pjob->ji_numnodes;i++)
     {
-    int ret;
+    int      ret = PBSE_NONE;
     hnodent *np = &pjob->ji_hosts[i];
 
     if (np->hn_node == pjob->ji_nodeid) /* this is me */
@@ -1947,6 +1835,7 @@ int sigalltasks_sisters(
 
     if ((chan = DIS_tcp_setup(stream)) == NULL)
       {
+      ret = ENOMEM;
       }
     else if ((ret = im_compose(chan, 
             pjob->ji_qs.ji_jobid,
@@ -1975,7 +1864,7 @@ int sigalltasks_sisters(
     close(stream);
 
     if (ret != DIS_SUCCESS)
-      return ret;
+      return(ret);
     } /* END for each node in ji_hosts */
 
   return(PBSE_NONE);
@@ -2000,6 +1889,8 @@ static void resume_suspend(
 
   signum = (susp == 1) ? SIGSTOP : SIGCONT;
 
+  if((pjob == NULL)||(preq == NULL))
+    return;
 
   if (LOGLEVEL >= 2)
     {
@@ -2009,7 +1900,7 @@ static void resume_suspend(
     log_record(
       PBSEVENT_JOB,
       PBS_EVENTCLASS_JOB,
-      (pjob != NULL) ? pjob->ji_qs.ji_jobid : "N/A",
+      pjob->ji_qs.ji_jobid,
       log_buffer);
     }
 
@@ -2037,7 +1928,9 @@ static void resume_suspend(
 
   if (susp == 1)
     {
-    kill_task((task *)GET_NEXT(pjob->ji_tasks), SIGTSTP, 0);
+    task *tmpTask = (task *)GET_NEXT(pjob->ji_tasks);
+    if(tmpTask != NULL)
+      kill_task(tmpTask, SIGTSTP, 0);
 
     MUSleep(50000);
     }
@@ -2095,7 +1988,7 @@ static void resume_suspend(
       log_record(
         PBSEVENT_ERROR,
         PBS_EVENTCLASS_JOB,
-        (pjob != NULL) ? pjob->ji_qs.ji_jobid : "N/A",
+        pjob->ji_qs.ji_jobid,
         log_buffer);
       }
 
@@ -2141,7 +2034,7 @@ static void resume_suspend(
       log_record(
         PBSEVENT_JOB,
         PBS_EVENTCLASS_JOB,
-        (pjob != NULL) ? pjob->ji_qs.ji_jobid : "N/A",
+        pjob->ji_qs.ji_jobid,
         "job suspended - adjusted job state");
       }
     }
@@ -2169,7 +2062,7 @@ static void resume_suspend(
       log_record(
         PBSEVENT_JOB,
         PBS_EVENTCLASS_JOB,
-        (pjob != NULL) ? pjob->ji_qs.ji_jobid : "N/A",
+        pjob->ji_qs.ji_jobid,
         "job resumed - adjusted job state");
       }
     }    /* END else (susp != 0) */
@@ -2334,7 +2227,7 @@ void req_signaljob(
   numprocs = kill_job(pjob, sig, __func__, "killing job");
 
   if ((numprocs == 0) && ((sig == 0)||(sig == SIGKILL)) &&
-    (pjob->ji_qs.ji_substate != JOB_SUBSTATE_OBIT))
+      (pjob->ji_qs.ji_substate != JOB_SUBSTATE_OBIT))
     {
     /* SIGNUL and no procs found, force job to exiting */
     /* force issue of (another) job obit */
@@ -2690,7 +2583,7 @@ static int del_files(
       /* the job's stdout/stderr */
 
 #if NO_SPOOL_OUTPUT == 0
-      strncpy(path, path_spool, sizeof(path));
+      snprintf(path, MAXPATHLEN + 1, "%s", path_spool);
 #endif /* !NO_SPOOL_OUTPUT */
       }
     else if (AsUser == FALSE)
@@ -2705,6 +2598,8 @@ static int del_files(
 
         add_bad_list(pbadfile,log_buffer,1);
 
+        free(path);
+
         return(-1);
         }
 
@@ -2718,6 +2613,8 @@ static int del_files(
           strerror(errno));
 
         add_bad_list(pbadfile,log_buffer,1);
+        
+        free(path);
 
         return(-1);
         }
@@ -2732,6 +2629,8 @@ static int del_files(
           strerror(errno));
 
         add_bad_list(pbadfile,log_buffer,1);
+        
+        free(path);
 
         return(-1);
         }
@@ -2796,6 +2695,8 @@ static int del_files(
                 path);
 
         add_bad_list(pbadfile, log_buffer, 1);
+
+        free(path);
 
         return(-1);
 
@@ -2915,6 +2816,7 @@ static int del_files(
       }
     }
 
+  free(path);
 
   return(rc);
   }  /* END del_files() */
@@ -3424,7 +3326,7 @@ void req_cpyfile(
           {
           havehomespool = 1;
 
-          strncpy(homespool, wdir, sizeof(homespool));
+          snprintf(homespool, sizeof(homespool), "%s", wdir);
 
           break;
           }
@@ -3433,7 +3335,7 @@ void req_cpyfile(
           {
           havehomespool = 1;
 
-          strncpy(homespool, wdir, sizeof(homespool));
+          snprintf(homespool, sizeof(homespool), "%s", wdir);
 
           break;
           }
@@ -3470,7 +3372,7 @@ void req_cpyfile(
 
     strcpy(pjob->ji_qs.ji_jobid, preq->rq_ind.rq_cpyfile.rq_jobid);
 
-    if (TTmpDirName(pjob, faketmpdir))
+    if (TTmpDirName(pjob, faketmpdir, sizeof(faketmpdir)))
       {
       if (!mkdirtree(faketmpdir, 0755))
         {
@@ -3944,10 +3846,9 @@ error:
 
         /* Copying out files and in spool area ... */
         /* move to "undelivered" directory         */
-
-        strncpy(localname, path_spool, sizeof(localname));
+        snprintf(localname, sizeof(localname), "%s", path_spool);
         strncat(localname, pair->fp_local, (sizeof(localname) - strlen(localname) - 1));
-        strncpy(undelname, path_undeliv, sizeof(undelname));
+        snprintf(undelname, sizeof(undelname), "%s", path_undeliv);
         strncat(undelname, pair->fp_local, (sizeof(undelname) - strlen(undelname) - 1));
 
         if (rename(localname, undelname) == 0)

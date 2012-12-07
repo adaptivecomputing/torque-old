@@ -75,6 +75,7 @@ START_TEST(test_set_env_opts)
   }
 END_TEST
 
+
 START_TEST(test_parse_variable_list)
   {
   job_data *dest_map = NULL;
@@ -101,11 +102,12 @@ START_TEST(test_parse_variable_list_equalfirst)
   {
   job_data *dest_map = NULL;
   job_data *src_map = NULL;
-  memmgr *mm;
-  int var_type = ENV_DATA;
-  int op_type = SET;
-  char list[] = "hi=there,=me";
+  memmgr   *mm;
+  int       var_type = ENV_DATA;
+  int       op_type = SET;
+  char      list[] = "hi=there,=me";
   tc_num = 0;
+
   parse_variable_list(&mm, &dest_map, src_map, var_type, op_type, list);
   }
 END_TEST

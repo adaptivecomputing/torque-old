@@ -121,7 +121,7 @@ void *next_thing(resizable_array *ra, int *iter)
   exit(1);
   }
 
-void append_link(tlist_head *head, list_link *new, void *pobj)
+void append_link(tlist_head *head, list_link *new_link, void *pobj)
   {
   fprintf(stderr, "The call to append_link needs to be mocked!!\n");
   exit(1);
@@ -163,7 +163,7 @@ void *get_prior(list_link pl, char *file, int line)
   exit(1);
   }
 
-void insert_link(struct list_link *old, struct list_link *new, void *pobj, int position)
+void insert_link(struct list_link *old, struct list_link *new_link, void *pobj, int position)
   {
   fprintf(stderr, "The call to insert_link needs to be mocked!!\n");
   exit(1);
@@ -177,12 +177,58 @@ void *get_next(list_link pl, char *file, int line)
 
 char *threadsafe_tokenizer(char **str, char *delims)
   {
-  fprintf(stderr, "The call to threadsafe_tokenizer needs to be mocked!!\n");
-  exit(1);
+  char *current_char;
+  char *start;
+
+  if ((str == NULL) ||
+      (*str == NULL))
+    return(NULL);
+
+  /* save start position */
+  start = *str;
+
+  /* return NULL at the end of the string */
+  if (*start == '\0')
+    return(NULL);
+
+  /* begin at the start */
+  current_char = start;
+
+  /* advance to the end of the string or until you find a delimiter */
+  while ((*current_char != '\0') &&
+         (!strchr(delims, *current_char)))
+    current_char++;
+
+  /* advance str */
+  if (*current_char != '\0')
+    {
+    /* not at the end of the string */
+    *str = current_char + 1;
+    *current_char = '\0';
+    }
+  else
+    {
+    /* at the end of the string */
+    *str = current_char;
+    }
+
+  return(start);
   }
 
 int get_svr_attr_l(int attr_index, long *l)
   {
+  static int count = 0;
+
+  if (attr_index == SRV_ATR_MaxSlotLimit)
+    {
+    count++;
+
+    if (count == 1)
+      return(-1);
+    
+    *l = 5;
+    }
+
   return(0);
   }
 
@@ -205,3 +251,79 @@ int unlock_ji_mutex(job *pjob, const char *id, char *msg, int logging)
   {
   return(0);
   }
+
+int unlock_ai_mutex(
+
+  job_array  *pa,
+  const char *id,
+  char       *msg,
+  int        logging)
+
+  {
+  return(0);
+  }
+
+job_array *get_jobs_array(
+
+  job **pjob_ptr)
+
+  {
+  return(NULL);
+  }
+
+int lock_ai_mutex(
+
+  job_array  *pa,
+  const char *id,
+  char       *msg,
+  int        logging)
+
+  {
+  return(0);
+  }
+
+int remove_from_hash_map(
+
+  hash_map *hm,
+  char     *key)
+
+  {
+  return(0);
+  }
+
+int add_to_hash_map(
+    
+  hash_map *hm,
+  void     *obj,
+  char     *key)
+
+  {
+  return(0);
+  }
+
+hash_map *get_hash_map(
+
+  int size_param)
+
+  {
+  return(NULL);
+  }
+
+void *get_from_hash_map(
+
+  hash_map *hm,
+  char     *key)
+
+  {
+  return(NULL);
+  }
+
+void *next_from_hash_map(
+
+  hash_map *hm,
+  int      *iter)
+
+  {
+  return(NULL);
+  }
+

@@ -334,7 +334,7 @@ int tcp_connect_sockaddr(struct sockaddr *sa, size_t sa_size)
   exit(1);
   }
 
-void append_link(tlist_head *head, list_link *new, void *pobj)
+void append_link(tlist_head *head, list_link *new_link, void *pobj)
   {
   fprintf(stderr, "The call to append_link needs to be mocked!!\n");
   exit(1);
@@ -346,7 +346,7 @@ void sister_job_nodes(job *pjob, char *radix_hosts, char *radix_ports )
   exit(1);
   }
 
-int TTmpDirName(job *pjob, char *tmpdir)
+int TTmpDirName(job *pjob, char *tmpdir, int tmdir_size)
   {
   fprintf(stderr, "The call to TTmpDirName needs to be mocked!!\n");
   exit(1);
@@ -457,3 +457,5 @@ pid_t fork_me(int conn)
 void DIS_tcp_close(struct tcp_chan *chan) {}
 
 void DIS_tcp_cleanup(struct tcp_chan *chan) {}
+
+void free_dynamic_string(dynamic_string *ds) {}

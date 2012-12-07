@@ -11,6 +11,7 @@
 #include "work_task.h" /* work_task */
 #include "sched_cmds.h" /* SCH_SCHEDULE_NULL */
 #include "list_link.h" /* list_link */
+#include "user_info.h"
 
 
 int svr_resc_size = 0;
@@ -257,11 +258,6 @@ int lock_startup()
   return(0);
   }
 
-int remove_procct(job *pjob)
-  {
-  return(0);
-  }
-
 int insert_job_after_index(struct all_jobs *aj, int index, job *pjob)
   {
   return(0);
@@ -278,6 +274,30 @@ int unlock_sv_qs_mutex(pthread_mutex_t *sv_qs_mutex, const char *msg_string)
   }
 
 int lock_sv_qs_mutex(pthread_mutex_t *sv_qs_mutex, const char *msg_string)
+  {
+  return(0);
+  }
+
+unsigned int get_num_queued(user_info_holder *uih, char *user_name)
+  {
+  return(0);
+  }
+
+int  increment_queued_jobs(
+   
+  user_info_holder *uih,
+  char             *user_name,
+  job              *pjob)
+
+  {
+  return(0);
+  }
+
+int decrement_queued_jobs(
+  
+  user_info_holder *uih,
+  char             *user_name)
+
   {
   return(0);
   }

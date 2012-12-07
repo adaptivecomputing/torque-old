@@ -1,4 +1,3 @@
-#include "license_pbs.h" /* See here for the software license */
 /*
  *
  * qstat - (PBS) show stats of batch jobs, queues, or servers
@@ -556,19 +555,19 @@ static void altdsp_statjob(
 
     if (alt_opt & ALT_DISPLAY_R)
       {
-      printf("\n                                                 Req'd  Req'd   Elap \n");
+      printf("\n                                                       Req'd  Req'd   Elap \n");
 
-      printf("Job ID               Username    Queue    NDS   TSK    Memory Time  S Time   BIG  FAST   PFS\n");
+      printf("Job ID               Username    Queue    NDS   TSK    Memory Time  S Time      BIG  FAST   PFS\n");
 
-      printf("-------------------- ----------- -------- ----- ------ ------ ----- - ----- ----- ----- -----\n");
+      printf("-------------------- ----------- -------- ----- ------ ------ ----- - -----    ----- ----- -----\n");
       }
     else
       {
-      printf("\n                                                                         Req'd  Req'd   Elap\n");
+      printf("\n                                                                               Req'd    Req'd      Elap\n");
 
-      printf("Job ID               Username    Queue    Jobname          SessID NDS   TSK    Memory Time  S Time\n");
+      printf("Job ID               Username    Queue    Jobname          SessID NDS   TSK    Memory   Time   S   Time\n");
 
-      printf("-------------------- ----------- -------- ---------------- ------ ----- ------ ------ ----- - -----\n");
+      printf("-------------------- ----------- -------- ---------------- ------ ----- ------ ------ -------- - --------\n");
       }
     }
 
@@ -584,13 +583,9 @@ static void altdsp_statjob(
     eltimewal = blank;
     jstate    = blank;
     comment   = blank;
-    /* *pfs      = *blank;  */
     strcpy(pfs, blank);
-    /* *rqmem    = *blank;  */
     strcpy(rqmem, blank);
-    /* *srfsbig  = *blank;  */
     strcpy(srfsbig, blank);
-    /* *srfsfast = *blank;  */
     strcpy(srfsfast, blank);
     usecput = 0;
 
@@ -663,7 +658,7 @@ static void altdsp_statjob(
           }
         else if (!strcmp(pat->resource, "mem"))
           {
-          strncpy(rqmem, cnv_size(pat->value, alt_opt), SIZEL);
+          snprintf(rqmem, sizeof(rqmem), "%s", cnv_size(pat->value, alt_opt));
           }
         else if (!strcmp(pat->resource, "walltime"))
           {
@@ -676,15 +671,15 @@ static void altdsp_statjob(
           }
         else if (!strcmp(pat->resource, "srfs_big"))
           {
-          strncpy(srfsbig, cnv_size(pat->value, alt_opt), SIZEL - 1);
+          snprintf(srfsbig, sizeof(srfsbig), "%s", cnv_size(pat->value, alt_opt));
           }
         else if (!strcmp(pat->resource, "srfs_fast"))
           {
-          strncpy(srfsfast, cnv_size(pat->value, alt_opt), SIZEL - 1);
+          snprintf(srfsfast, sizeof(srfsfast), "%s", cnv_size(pat->value, alt_opt));
           }
         else if (!strcmp(pat->resource, "piofs"))
           {
-          strncpy(pfs, cnv_size(pat->value, alt_opt), SIZEL - 1);
+          snprintf(pfs, sizeof(pfs), "%s", cnv_size(pat->value, alt_opt));
           }
         }
       else if (!strcmp(pat->name, ATTR_exechost))
@@ -721,7 +716,7 @@ static void altdsp_statjob(
 
     if (alt_opt & ALT_DISPLAY_R)
       {
-      printf("%5.5s %*.*s %6.6s %5.5s %1.1s %5.5s %5.5s %5.5s %5.5s",
+      printf("%5.5s %*.*s %6.6s %5.5s %1.1s %8.8s %5.5s %5.5s %5.5s",
              nodect,
              tasksize,
              tasksize,
@@ -736,7 +731,7 @@ static void altdsp_statjob(
       }
     else
       {
-      snprintf(tmpLine, sizeof(tmpLine), "%%-%d.%ds %%6.6s %%5.5s %%*.*s %%6.6s %%5.5s %%1.1s %%5.5s",
+      snprintf(tmpLine, sizeof(tmpLine), "%%-%d.%ds %%6.6s %%5.5s %%*.*s %%6.6s %%8.8s %%1.1s %%8.8s",
                PBS_NAMELEN, PBS_NAMELEN);
 
       printf(tmpLine,
@@ -852,9 +847,7 @@ static void altdsp_statque(
 
   while (pstat != NULL)
     {
-    /* *rmem = '\0'; */
-
-    strncpy(rmem, "--  ", SIZEL - 1);
+    snprintf(rmem, sizeof(rmem), "--  ");
 
     cput  = blank;
     wallt = blank;
@@ -896,10 +889,7 @@ static void altdsp_statque(
         {
         if (strcmp(pat->resource, "mem") == 0)
           {
-          strncpy(
-            rmem,
-            cnv_size(pat->value, opt),
-            SIZEL);
+          snprintf(rmem, sizeof(rmem), "%s", cnv_size(pat->value, opt));
           }
         else if (strcmp(pat->resource, "cput") == 0)
           {
@@ -1369,25 +1359,25 @@ void display_statque(
 
   struct batch_status *p;
 
-  struct attrl *a = NULL;
-  int l;
-  char *c;
-  char *name;
-  char *max;
-  char *tot;
-  char ena[MAXNUML + 1];
-  char str[MAXNUML + 1];
-  char que[MAXNUML + 1];
-  char run[MAXNUML + 1];
-  char hld[MAXNUML + 1];
-  char wat[MAXNUML + 1];
-  char trn[MAXNUML + 1];
-  char ext[MAXNUML + 1];
-  char dne[MAXNUML + 1];
-  char *type;
-  char format[80];
+  struct attrl        *a = NULL;
+  int                  l;
+  char                *c;
+  char                *name;
+  char                *max;
+  char                *tot;
+  char                 ena[MAXNUML + 1];
+  char                 str[MAXNUML + 1];
+  char                 que[MAXNUML + 1];
+  char                 run[MAXNUML + 1];
+  char                 hld[MAXNUML + 1];
+  char                 wat[MAXNUML + 1];
+  char                 trn[MAXNUML + 1];
+  char                 ext[MAXNUML + 1];
+  char                 dne[MAXNUML + 1];
+  char                *type;
+  char                 format[80];
 
-  int  NUML = 5;
+  int                  NUML = 5;
 
 
   sprintf(format, "%%-%ds %%%ds %%%ds %%%ds %%%ds %%%ds %%%ds %%%ds %%%ds %%%ds %%%ds %%-%ds %%%ds\n",
@@ -1454,7 +1444,8 @@ void display_statque(
         {
         l = strlen(p->name);
 
-        if (l > PBS_NAMELEN)
+        if ((l > PBS_NAMELEN) &&
+            (a != NULL))
           {
           c = a->name + PBS_NAMELEN;
 
@@ -1979,7 +1970,7 @@ int main(
   char job_id[PBS_MAXCLTJOBID];
 
   char job_id_out[PBS_MAXCLTJOBID];
-  char server_out[MAXSERVERNAME];
+  char server_out[MAXSERVERNAME] = "";
   char server_old[MAXSERVERNAME] = "";
   char rmt_server[MAXSERVERNAME];
   char destination[PBS_MAXDEST + 1];
@@ -2215,8 +2206,8 @@ int main(
 
         if ((optarg != NULL) && !strcmp(optarg, "version"))
           {
-          fprintf(stderr, "version: %s\n",
-                  PACKAGE_VERSION);
+          fprintf(stderr, "Version: %s\nRevision: %s\n",
+            PACKAGE_VERSION, SVN_VERSION);
 
           exit(0);
           }
@@ -2466,7 +2457,7 @@ int main(
 
     located = FALSE;
 
-    strcpy(operand, argv[optind]);
+    snprintf(operand, sizeof(operand), "%s", argv[optind]);
 
     tcl_addarg(ops, operand);
 
@@ -2481,9 +2472,9 @@ int main(
 
           stat_single_job = 1;
 
-          strcpy(job_id, operand);
+          snprintf(job_id, sizeof(job_id), "%s", operand);
 
-          if (get_server(job_id, job_id_out, server_out))
+          if (get_server(job_id, job_id_out, sizeof(job_id_out), server_out, sizeof(server_out)))
             {
             fprintf(stderr, "qstat: illegally formed job identifier: %s\n",
                     job_id);
@@ -2501,7 +2492,7 @@ int main(
 
           stat_single_job = 0;
 
-          strcpy(destination, operand);
+          snprintf(destination, sizeof(destination), "%s", operand);
 
           if (parse_destination_id(
                 destination,
@@ -2520,14 +2511,14 @@ int main(
 
           if (notNULL(server_name_out))
             {
-            strcpy(server_out, server_name_out);
+            snprintf(server_out, sizeof(server_out), "%s", server_name_out);
             }
           else
             {
             server_out[0] = '\0';
             }
 
-          strcpy(job_id_out, queue_name_out);
+          snprintf(job_id_out, sizeof(job_id_out), "%s", queue_name_out);
 
           if (*queue_name_out != '\0')
             {
@@ -2543,7 +2534,13 @@ job_no_args:
           {
           any_failed = -1 * connect;
 
-          fprintf(stderr, "qstat: cannot connect to server %s (errno=%d) %s\n",
+          if (server_out[0] != 0)
+            fprintf(stderr, "qstat: cannot connect to server %s (errno=%d) %s\n",
+                server_out,
+                any_failed,
+                pbs_strerror(any_failed));
+          else
+            fprintf(stderr, "qstat: cannot connect to server %s (errno=%d) %s\n",
                   pbs_server,
                   any_failed,
                   pbs_strerror(any_failed));
@@ -2561,7 +2558,7 @@ job_no_args:
 
           p_server = pbs_statserver_err(connect, NULL, NULL, &any_failed);
 
-          strcpy(server_old, pbs_server);
+          snprintf(server_old, sizeof(server_old), "%s", pbs_server);
           }
         else
           {
@@ -2599,7 +2596,7 @@ job_no_args:
               {
               pbs_disconnect(connect);
 
-              strcpy(server_out, rmt_server);
+              snprintf(server_out, sizeof(server_out), "%s", rmt_server);
 
               goto job_no_args;
               }
@@ -2646,7 +2643,7 @@ job_no_args:
 
       case QUEUES:        /* get status of batch queues */
 
-        strcpy(destination, operand);
+        snprintf(destination, sizeof(destination), "%s", operand);
 
         if (parse_destination_id(destination,
                                  &queue_name_out,
@@ -2661,7 +2658,7 @@ job_no_args:
           {
           if (notNULL(server_name_out))
             {
-            strcpy(server_out, server_name_out);
+            snprintf(server_out, sizeof(server_out), "%s", server_name_out);
             }
           else
             server_out[0] = '\0';
@@ -2674,8 +2671,17 @@ que_no_args:
         if (connect <= 0)
           {
           any_failed = -1 * connect;
-          fprintf(stderr, "qstat: cannot connect to server %s (errno=%d) %s\n",
-                  pbs_server, any_failed, pbs_strerror(any_failed));
+          if (server_out[0] != 0)
+            fprintf(stderr, "qstat: cannot connect to server %s (errno=%d) %s\n",
+                server_out,
+                any_failed,
+                pbs_strerror(any_failed));
+          else
+            fprintf(stderr, "qstat: cannot connect to server %s (errno=%d) %s\n",
+                  pbs_server,
+                  any_failed,
+                  pbs_strerror(any_failed));
+
           tcl_stat(error, NULL, f_opt);
           break;
           }
@@ -2726,7 +2732,8 @@ que_no_args:
         break;
 
       case SERVERS:           /* get status of batch servers */
-        strcpy(server_out, operand);
+
+        snprintf(server_out, sizeof(server_out), "%s", operand);
 
 svr_no_args:
         connect = cnt2server(server_out);
@@ -2734,9 +2741,18 @@ svr_no_args:
         if (connect <= 0)
           {
           any_failed = -1 * connect;
+          if (server_out[0] != 0)
+            fprintf(stderr, "qstat: cannot connect to server %s (errno=%d) %s\n",
+                server_out,
+                any_failed,
+                pbs_strerror(any_failed));
+          else
+            fprintf(stderr, "qstat: cannot connect to server %s (errno=%d) %s\n",
+                  pbs_server,
+                  any_failed,
+                  pbs_strerror(any_failed));
 
-          fprintf(stderr, "qstat: cannot connect to server %s (errno=%d) %s\n",
-                  pbs_server, any_failed, pbs_strerror(any_failed));
+
           tcl_stat(error, NULL, f_opt);
           any_failed = connect;
           break;

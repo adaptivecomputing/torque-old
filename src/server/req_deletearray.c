@@ -33,6 +33,7 @@ extern struct work_task *apply_job_delete_nanny(struct job *, int);
 extern int has_job_delete_nanny(struct job *);
 extern void remove_stagein(job **pjob);
 extern void change_restart_comment_if_needed(struct job *);
+int issue_signal(job **, char *, void(*)(batch_request *), void *);
 
 extern char *msg_unkarrayid;
 extern char *msg_permlog;
@@ -40,7 +41,7 @@ extern char *msg_permlog;
 void post_delete(struct work_task *pwt);
 
 void array_delete_wt(struct work_task *ptask);
-void          on_job_exit(struct work_task *);
+void          on_job_exit_task(struct work_task *);
 
 extern int LOGLEVEL;
 
@@ -96,7 +97,7 @@ int attempt_delete(
       
       /* need to issue a signal to the mom, but we don't want to sent an ack to the
        * client when the mom replies */
-      issue_signal(&pjob, "SIGTERM", post_delete, NULL);
+      issue_signal(&pjob, "SIGTERM", free_br, NULL);
       }
 
     if (pjob != NULL)
@@ -130,7 +131,7 @@ int attempt_delete(
       log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, pjob->ji_qs.ji_jobid, log_buf);
       }
 
-    set_task(WORK_Immed, 0, on_job_exit, strdup(pjob->ji_qs.ji_jobid), FALSE);
+    set_task(WORK_Immed, 0, on_job_exit_task, strdup(pjob->ji_qs.ji_jobid), FALSE);
     }
   else if ((pjob->ji_qs.ji_svrflags & JOB_SVFLG_StagedIn) != 0)
     {
@@ -176,7 +177,7 @@ int attempt_delete(
         log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, pjob->ji_qs.ji_jobid, log_buf);
         }
       
-      set_task(WORK_Timed, time_now + KeepSeconds, on_job_exit, strdup(pjob->ji_qs.ji_jobid), FALSE);
+      set_task(WORK_Timed, time_now + KeepSeconds, on_job_exit_task, strdup(pjob->ji_qs.ji_jobid), FALSE);
       }
     else
       release_mutex = FALSE;
@@ -232,12 +233,7 @@ int req_deletearray(
 
     log_event(PBSEVENT_SECURITY,PBS_EVENTCLASS_JOB,preq->rq_ind.rq_delete.rq_objname,log_buf);
 
-    pthread_mutex_unlock(pa->ai_mutex);
-    if (LOGLEVEL >= 7)
-      {
-      sprintf(log_buf, "%s: unlocked ai_mutex", __func__);
-      log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, __func__, log_buf);
-      }
+    unlock_ai_mutex(pa, __func__, "1", LOGLEVEL);
 
     req_reject(PBSE_PERM, 0, preq, NULL, "operation not permitted");
     return(PBSE_NONE);
@@ -258,18 +254,14 @@ int req_deletearray(
 
       log_record(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, __func__, log_buf);
       }
+
     /* parse the array range */
     num_skipped = delete_array_range(pa,range);
 
     if (num_skipped < 0)
       {
       /* ERROR */
-      pthread_mutex_unlock(pa->ai_mutex);
-      if (LOGLEVEL >= 7)
-        {
-        sprintf(log_buf, "%s: unlocked ai_mutex", __func__);
-        log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, __func__, log_buf);
-        }
+      unlock_ai_mutex(pa, __func__, "2", LOGLEVEL);
 
       req_reject(PBSE_IVALREQ,0,preq,NULL,"Error in specified array range");
       return(PBSE_NONE);
@@ -293,22 +285,12 @@ int req_deletearray(
 
   if (num_skipped != NO_JOBS_IN_ARRAY)
     {
-    pthread_mutex_unlock(pa->ai_mutex);
-    if (LOGLEVEL >= 7)
-      {
-      sprintf(log_buf, "%s: unlocked ai_mutex", __func__);
-      log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, __func__, log_buf);
-      }
+    unlock_ai_mutex(pa, __func__, "1", LOGLEVEL);
     
     /* check if the array is gone */
     if ((pa = get_array(preq->rq_ind.rq_delete.rq_objname)) != NULL)
       {
-      pthread_mutex_unlock(pa->ai_mutex);
-      if (LOGLEVEL >= 7)
-        {
-        sprintf(log_buf, "%s: unlocked ai_mutex", __func__);
-        log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, __func__, log_buf);
-        }
+      unlock_ai_mutex(pa, __func__, "1", LOGLEVEL);
       
       /* some jobs were not deleted.  They must have been running or had
          JOB_SUBSTATE_TRANSIT */
@@ -330,21 +312,6 @@ int req_deletearray(
   return(PBSE_NONE);
   } /* END req_deletearray() */
 
-
-
-void post_delete(
-    
-  struct work_task *pwt)
-
-  {
-  /* no op - do not reply to client */
-
-  if (pwt)
-    {
-    free(pwt->wt_mutex);
-    free(pwt);
-    }
-  }
 
 
 /* if jobs were in the prerun state , this attempts to keep track
@@ -420,7 +387,7 @@ void array_delete_wt(
             sprintf(log_buf, "calling on_job_exit from %s", __func__);
             log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, pjob->ji_qs.ji_jobid, log_buf);
             }
-          set_task(WORK_Immed, 0, on_job_exit, strdup(pjob->ji_qs.ji_jobid), FALSE);
+          set_task(WORK_Immed, 0, on_job_exit_task, strdup(pjob->ji_qs.ji_jobid), FALSE);
           
           unlock_ji_mutex(pjob, __func__, "1", LOGLEVEL);
           }
@@ -433,27 +400,22 @@ void array_delete_wt(
         if (pjob != NULL)
           {
           /* job_abt() calls svr_job_purge which will try to lock the array again */
-          pthread_mutex_unlock(pa->ai_mutex);
+          unlock_ai_mutex(pa, __func__, "3", LOGLEVEL);
           job_abt(&pjob, NULL);
-          pthread_mutex_lock(pa->ai_mutex);
+          pa = get_array(preq->rq_ind.rq_delete.rq_objname);
           }
         }
       else
         {
         /* job_abt() calls svr_job_purge which will try to lock the array again */
-        pthread_mutex_unlock(pa->ai_mutex);
+        unlock_ai_mutex(pa, __func__, "1", LOGLEVEL);
         job_abt(&pjob, NULL);
-        pthread_mutex_lock(pa->ai_mutex);
+        pa = get_array(preq->rq_ind.rq_delete.rq_objname);
         }
       } /* END if (ji_substate == JOB_SUBSTATE_PRERUN) */
     } /* END for each job in array */
   
-  pthread_mutex_unlock(pa->ai_mutex);
-  if (LOGLEVEL >= 7)
-    {
-    sprintf(log_buf, "%s: unlocked ai_mutex", __func__);
-    log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, __func__, log_buf);
-    }
+  unlock_ai_mutex(pa, __func__, "1", LOGLEVEL);
   
   if (num_jobs == num_prerun)
     {

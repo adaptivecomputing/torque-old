@@ -106,7 +106,7 @@
 
 /* External functions */
 
-extern int issue_to_svr(char *svr, struct batch_request *, void (*func)(struct work_task *));
+int issue_to_svr(char *svr, struct batch_request *, void (*func)(struct work_task *));
 
 /* Global Data Items: */
 
@@ -131,7 +131,7 @@ int req_track(
   int                   need;
   time_t                time_now = time(NULL);
 
-  struct tracking      *new;
+  struct tracking      *new_track;
   struct tracking      *ptk;
   struct rq_track      *prqt;
 
@@ -200,9 +200,9 @@ int req_track(
 
       need = server.sv_tracksize * 3 / 2;
 
-      new = calloc(need, sizeof(struct tracking));
+      new_track = calloc(need, sizeof(struct tracking));
 
-      if (new == NULL)
+      if (new_track == NULL)
         {
         /* FAILURE */
 
@@ -213,16 +213,16 @@ int req_track(
         return(PBSE_NONE);
         }
 
-      memcpy(new, server.sv_track, server.sv_tracksize);
+      memcpy(new_track, server.sv_track, server.sv_tracksize);
 
-      empty = new + server.sv_tracksize; /* first new slot */
+      empty = new_track + server.sv_tracksize; /* first new slot */
 
       for (i = server.sv_tracksize;i < need;i++)
-        (new + i)->tk_mtime = 0;
+        (new_track + i)->tk_mtime = 0;
 
       server.sv_tracksize = need;
-
-      server.sv_track     = new;
+      free(server.sv_track);
+      server.sv_track     = new_track;
       }
 
     empty->tk_mtime = time_now;
@@ -346,5 +346,6 @@ void issue_track(
   while (*pc != '.')
     pc++;
 
-  (void)issue_to_svr(++pc, preq, release_req);
+  issue_to_svr(++pc, preq, NULL);
+  free_br(preq);
   }

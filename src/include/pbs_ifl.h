@@ -85,10 +85,10 @@
 
 #ifndef _PBS_IFL_DEF
 #define _PBS_IFL_DEF
+#include <sys/socket.h>
+
 #include "u_hash_map_structs.h"
 #include "u_memmgr.h"
-
-#include <sys/socket.h>
 
 /* Attribute Names used by user commands */
 
@@ -116,6 +116,7 @@
 #define ATTR_login_node_id "login_node_id"
 #define ATTR_login_prop "login_property"
 #define ATTR_external_nodes "external_nodes"
+#define ATTR_multi_req_alps "multi_req_alps"
 #define ATTR_M "Mail_Users"
 #define ATTR_N "Job_Name"
 #define ATTR_S "Shell_Path_List"
@@ -193,6 +194,7 @@
 #define ATTR_P           "proxy_user"
 #define ATTR_node_exclusive "node_exclusive"
 #define ATTR_exec_gpus   "exec_gpus"
+#define ATTR_exec_mics   "exec_mics"
 #define ATTR_J           "job_id"
 #define ATTR_pagg         "pagg_id"
 
@@ -345,6 +347,8 @@
 #define ATTR_NODE_gpus             "gpus"
 #define ATTR_NODE_gpustatus        "gpu_status"
 #define ATTR_NODE_gpus_str         "numa_gpu_node_str"
+#define ATTR_NODE_mics             "mics"
+#define ATTR_NODE_micstatus        "mic_status"
 
 /* notification email formating */
 #define ATTR_mailsubjectfmt "mail_subject_fmt"
@@ -465,7 +469,11 @@
 #define PBS_MAXQUEUENAME 15 /* max queue name length */
 #define PBS_MAXSERVERNAME PBS_MAXHOSTNAME /* max server name length */
 #define PBS_MAXJOBARRAYLEN      7       /* number of characters allowed in jobarray portion of job id, including '[]' */
+#ifdef USE_MAXINT_JOBIDS
+#define PBS_MAXSEQNUM  12 /* max sequence number length */
+#else
 #define PBS_MAXSEQNUM  8 /* max sequence number length */
+#endif
 #define PBS_MAXPORTNUM  5 /* udp/tcp port numbers max=16 bits */
 #define PBS_MAXJOBARRAY  99999
 #define PBS_MAXSVRJOBID  (PBS_MAXSEQNUM + PBS_MAXSERVERNAME + PBS_MAXPORTNUM + PBS_MAXJOBARRAYLEN + 2 ) /* server job id size */

@@ -190,7 +190,8 @@ int main(
           exit(EXIT_FAILURE);
           }
 
-        size = ftell(fp);
+        if ((size = ftell(fp)) < 0)
+          size = 0;
 
         HostList[MIN(size,(long)sizeof(HostList) - 1)] = '\0';
 
@@ -394,7 +395,19 @@ int main(
               {
               if (!strstr(nodeattrs->value, ND_down))
                 {
-                rc = do_mom(pbstat->name, MOMPort, CmdIndex) >= 0 ? HostCount++ : FailCount++;
+                int retries = 0;
+
+                while (retries < 5)
+                  {
+                  rc = do_mom(pbstat->name, MOMPort, CmdIndex) >= 0 ? HostCount++ : FailCount++;
+                  if (rc >= 0)
+                    break;
+                  fprintf(stdout, "attempting command again\n");
+                  retries++;
+                  sleep(1);
+                  continue;
+                  }
+
                 }
               else
                 {
@@ -423,11 +436,25 @@ int main(
       }
     else
       {
-      rc = do_mom(HPtr, MOMPort, CmdIndex);
-      if (rc >= 0)
-        HostCount++;
-      else
-        FailCount++;
+      int retries = 0;
+
+      while (retries < 5)
+        {
+        rc = do_mom(HPtr, MOMPort, CmdIndex);
+        if (rc >= 0)
+          {
+          HostCount++;
+          break;
+          }
+        else
+          {
+          FailCount++;
+          fprintf(stdout, "attempting command again\n");
+          retries++;
+          sleep(1);
+          continue;
+          }
+        }
       } /* END if (*HPtr == ':') */
 
     HPtr = strtok(NULL, ", \t\n");
@@ -456,16 +483,18 @@ int main(
 int send_command(
 
   struct tcp_chan *chan,
-  int cmd)
+  int              cmd)
 
   {
   int rc;
 
-  rc = diswsi(chan,cmd);
+  if((rc = diswsi(chan,cmd)) != DIS_SUCCESS)
+    return (rc);
 
   if (cmd == RM_CMD_CONFIG)
     {
-    diswst(chan,ConfigBuf);
+    if((rc = diswst(chan,ConfigBuf)) != DIS_SUCCESS)
+      return(rc);
     }
 
   DIS_tcp_wflush(chan);
@@ -489,16 +518,25 @@ int send_command(
 int send_command_str(
 
   struct tcp_chan *chan,
-  int   cmd,
-  char *query)     /* I */
+  int              cmd,
+  char            *query) /* I */
 
   {
-  int rc = send_command(chan,cmd);
+  int rc;
+  
+  rc = diswsi(chan, cmd);
 
-  if (rc != DIS_SUCCESS)
+  if ((rc != DIS_SUCCESS) ||
+      (cmd == RM_CMD_CLOSE))
     return(rc);
 
-  rc = diswcs(chan,query,strlen(query));
+  if (cmd == RM_CMD_CONFIG)
+    {
+    if((rc = diswst(chan, ConfigBuf)) != DIS_SUCCESS)
+      return (rc);
+    }
+
+  rc = diswcs(chan, query, strlen(query));
 
   DIS_tcp_wflush(chan);
 
@@ -539,12 +577,12 @@ int check_success(
 
 char *read_mom_reply(
 
-  int *local_errno, /* O */
+  int             *local_errno, /* O */
   struct tcp_chan *chan)
 
   {
   int   rc;
-  char *value;
+  char *value = NULL;
 
   if (check_success(chan))
     return(NULL);
@@ -553,7 +591,10 @@ char *read_mom_reply(
 
   if (rc != DIS_SUCCESS)
     {
-    *local_errno = EIO;
+    if (value != NULL)
+      free(value);
+
+    *local_errno = rc;
 
     return(NULL);
     }
@@ -599,6 +640,7 @@ int do_mom(
   int socket;
   int local_errno = 0;
   struct tcp_chan *chan = NULL;
+  int rc;
 
   if ((socket = openrm(HPtr, MOMPort)) < 0)
     {
@@ -694,6 +736,8 @@ int do_mom(
 
       fprintf(stdout,"job clear request successful on %s\n",
         HPtr);
+
+      free(Value);
       }  /* END BLOCK (case momClear) */
 
     break;
@@ -786,6 +830,8 @@ int do_mom(
             pbs_strerror(errno),
             local_errno,
             pbs_strerror(local_errno));
+            return(-1);
+
           }
         else
           {
@@ -809,6 +855,8 @@ int do_mom(
             }
           }
 
+        free(Value);
+
         if (ptr != NULL)
           {
           *ptr = '=';
@@ -818,6 +866,20 @@ int do_mom(
 
     break;
     }  /* END switch(CmdIndex) */
+  rc = diswsi(chan, RM_PROTOCOL);
+
+  if (rc != DIS_SUCCESS)
+    return(rc);
+
+  rc = diswsi(chan, RM_PROTOCOL_VER);
+
+  if (rc != DIS_SUCCESS)
+    return(rc);
+
+  rc = diswsi(chan, 1);
+
+  if (rc != DIS_SUCCESS)
+    return(rc);
 
   send_command(chan,RM_CMD_CLOSE);
 

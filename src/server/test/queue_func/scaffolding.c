@@ -8,6 +8,7 @@
 #include "attribute.h" /* pbs_attribute */
 #include "hash_table.h" /* hash_table */
 #include "pbs_job.h" /* job */
+#include "user_info.h"
 
 char *msg_err_unlink = "Unlink of %s file %s failed";
 all_queues svr_queues;
@@ -116,3 +117,7 @@ int unlock_ji_mutex(job *pjob, const char *id, char *msg, int logging)
   {
   return(0);
   }
+
+void initialize_user_info_holder(user_info_holder *uih) {}
+
+void free_user_info_holder(user_info_holder *uih) {} 

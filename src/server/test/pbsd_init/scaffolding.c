@@ -17,10 +17,13 @@
 #include "batch_request.h" /* batch_request */
 #include "net_connect.h" /* pbs_net_t */
 #include "queue.h" /* all_queues, pbs_queue */
+#include "user_info.h"
+#include "hash_map.h"
 
 int scheduler_sock=0;
 int scheduler_jobct = 0;
 pthread_mutex_t *job_log_mutex;
+pthread_mutex_t *reroute_job_mutex;
 pthread_mutex_t *log_mutex;
 char *msg_init_chdir = "unable to change to directory %s";
 char *path_jobs;
@@ -91,14 +94,14 @@ pthread_mutex_t *listener_command_mutex;
 pthread_mutex_t *acctfile_mutex;
 pthread_mutex_t *check_tasks_mutex;
 pthread_mutex_t *retry_routing_mutex;
+user_info_holder users;
 
 
-
-void on_job_rerun(struct work_task *ptask)
+void on_job_rerun_task(struct work_task *ptask)
   {
-  fprintf(stderr, "The call to on_job_rerun needs to be mocked!!\n");
-  exit(1);
   }
+
+void initialize_user_info_holder(user_info_holder *uih) {}
 
 job_array *get_jobs_array(job **pjob)
   {
@@ -166,10 +169,8 @@ pbs_net_t get_hostaddr(int *local_errno, char *hostname)
   exit(1);
   }
 
-void on_job_exit(struct work_task *ptask)
+void on_job_exit_task(struct work_task *ptask)
   {
-  fprintf(stderr, "The call to on_job_exit needs to be mocked!!\n");
-  exit(1);
   }
 
 int job_log_open(char *filename, char *directory)
@@ -250,7 +251,7 @@ int insert_job(struct all_jobs *aj, job *pjob)
   exit(1);
   }
 
-int unlock_node(struct pbsnode *the_node, char *id, char *msg, int logging)
+int unlock_node(struct pbsnode *the_node, const char *id, char *msg, int logging)
   {
   fprintf(stderr, "The call to unlock_node needs to be mocked!!\n");
   exit(1);
@@ -286,7 +287,7 @@ void log_close(int msg)
   exit(1);
   }
 
-int set_arst(struct pbs_attribute *attr, struct pbs_attribute *new, enum batch_op op)
+int set_arst(struct pbs_attribute *attr, struct pbs_attribute *new_attr, enum batch_op op)
   {
   fprintf(stderr, "The call to set_arst needs to be mocked!!\n");
   exit(1);
@@ -606,4 +607,27 @@ int unlock_ji_mutex(job *pjob, const char *id, char *msg, int logging)
 int lock_ji_mutex(job *pjob, const char *id, char *msg, int logging)
   {
   return(0);
+  }
+
+int lock_ai_mutex(job_array *pa, const char *func_id, char *msg, int logging)
+  {
+  return(0);
+  }
+
+int unlock_ai_mutex(job_array *pa, const char *func_id, char *msg, int logging)
+  {
+  return(0);
+  }
+
+hash_map *get_hash_map(int size)
+  {
+  return(NULL);
+  }
+
+job_array *get_array(
+    
+  char *id)
+
+  {
+  return(NULL);
   }

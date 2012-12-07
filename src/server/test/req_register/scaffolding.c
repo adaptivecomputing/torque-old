@@ -107,7 +107,7 @@ char *pbse_to_txt(int err)
   exit(1);
   }
 
-void append_link(tlist_head *head, list_link *new, void *pobj)
+void append_link(tlist_head *head, list_link *new_link, void *pobj)
   {
   fprintf(stderr, "The call to append_link to be mocked!!\n");
   exit(1);
@@ -177,6 +177,11 @@ int get_batch_request_id(
 void free_br(batch_request *preq) {} 
 
 int unlock_ji_mutex(job *pjob, const char *id, char *msg, int logging)
+  {
+  return(0);
+  }
+
+int unlock_ai_mutex(job_array *pa, const char *id, char *msg, int logging)
   {
   return(0);
   }

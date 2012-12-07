@@ -583,21 +583,17 @@ int chk_file_sec(
 
     /* FAILURE */
 
-    if (EMsg != NULL)
-      snprintf(EMsg, 1024, "%s cannot be lstat'd - errno=%d, %s",
-               path,
-               rc,
-               strerror(rc));
+    snprintf(EMsg, 1024, "%s cannot be lstat'd - errno=%d, %s",
+             path,
+             rc,
+             strerror(rc));
 
     goto chkerr;
     }
 
   if (S_ISLNK(sbuf.st_mode) != 0)
     {
-    i = readlink(
-          path,
-          symlink,  /* O */
-          _POSIX_PATH_MAX);
+    i = readlink(path, symlink, sizeof(symlink) - 1);
 
     if (i < 0)
       {
@@ -613,7 +609,10 @@ int chk_file_sec(
       goto chkerr;
       }
 
-    symlink[i] = '\0';
+    if (i == sizeof(symlink) - 1)
+      symlink[i] = '\0';
+    else
+      symlink[i + 1] = '\0';
 
     if (symlink[0] == '/')
       {
@@ -771,13 +770,13 @@ chkerr:
       {
       if (EMsg[0] != '\0')
         {
-        sprintf(error_buf, "Security violation with \"%s\" - %s",
+        snprintf(error_buf, _POSIX_PATH_MAX, "Security violation with \"%s\" - %s",
                 path,
                 EMsg);
         }
       else
         {
-        sprintf(error_buf, "Security violation with \"%s\", errno=%d, %s",
+        snprintf(error_buf, _POSIX_PATH_MAX, "Security violation with \"%s\", errno=%d, %s",
                 path,
                 rc,
                 strerror(rc));

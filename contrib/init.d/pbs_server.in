@@ -16,7 +16,7 @@ create() {
     fi
 
     for SLEEP in 2 4 6 8 10 ; do
-        $PBS_DAEMON -d $PBS_HOME -t create &
+        $PBS_DAEMON -d $PBS_HOME -t create -f &
         sleep $SLEEP
         $BIN_PATH/qterm
     done
@@ -52,8 +52,13 @@ stop() {
         exit 0
     fi
     echo -n "Shutting down TORQUE Server: "
-    killproc pbs_server -TERM
+    $BIN_PATH/qterm
     RET=$?
+    if [[ $RET -ne 0 ]]; then
+      killproc pbs_server -TERM
+      RET=$?
+    fi
+
     rm -f /var/lock/subsys/pbs_server
     echo
 }

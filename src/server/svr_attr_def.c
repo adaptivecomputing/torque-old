@@ -94,7 +94,7 @@ extern int servername_chk (pbs_attribute * pattr, void *pobject, int actmode);
 extern int schiter_chk (pbs_attribute * pattr, void *pobject, int actmode);
 
 extern int nextjobnum_chk (pbs_attribute * pattr, void *pobject, int actmode);
-extern int set_nextjobnum (pbs_attribute * attr, pbs_attribute * new,
+extern int set_nextjobnum (pbs_attribute * attr, pbs_attribute * new_attr,
 			   enum batch_op op);
 
 extern int poke_scheduler (pbs_attribute * pattr, void *pobject, int actmode);
@@ -105,12 +105,12 @@ extern int encode_svrstate (pbs_attribute * pattr, tlist_head * phead,
 extern int decode_rcost (pbs_attribute * patr, char *name, char *rn, char *val, int perm);
 extern int encode_rcost (pbs_attribute * attr, tlist_head * phead, char *atname,
 			 char *rsname, int mode, int perm);
-extern int set_rcost (pbs_attribute * attr, pbs_attribute * new, enum batch_op);
+extern int set_rcost (pbs_attribute * attr, pbs_attribute * new_attr, enum batch_op);
 extern void free_rcost (pbs_attribute * attr);
-extern int set_null (pbs_attribute * patr, pbs_attribute * new, enum batch_op op);
+extern int set_null (pbs_attribute * patr, pbs_attribute * new_attr, enum batch_op op);
 
 extern int token_chk (pbs_attribute * pattr, void *pobject, int actmode);
-extern int set_tokens (struct pbs_attribute *attr, struct pbs_attribute *new,
+extern int set_tokens (struct pbs_attribute *attr, struct pbs_attribute *new_attr,
 		       enum batch_op op);
 
 extern int extra_resc_chk (pbs_attribute * pattr, void *pobject, int actmode);
@@ -1012,7 +1012,7 @@ attribute_def svr_attr_def[] =
       PARENT_TYPE_SERVER
   },
 
-  /*SRV_ATR_display_job_server_suffix */
+  /* SRV_ATR_display_job_server_suffix */
   { ATTR_dispsvrsuffix, /* "display_job_server_suffix" */
     decode_b,
     encode_b,
@@ -1025,7 +1025,7 @@ attribute_def svr_attr_def[] =
     PARENT_TYPE_SERVER
   },
 
-  /*SRV_ATR_job_suffix_alias */
+  /* SRV_ATR_job_suffix_alias */
   { ATTR_jobsuffixalias, /* "job_suffix_alias" */
     decode_str,
     encode_str,

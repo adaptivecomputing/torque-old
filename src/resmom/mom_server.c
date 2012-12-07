@@ -213,10 +213,6 @@
 #include <arpa/inet.h>
 #endif
 
-#if defined(NVIDIA_GPUS) && defined(NVML_API)
-#include "nvml.h"
-#endif  /* NVIDIA_GPUS and NVML_API */
-
 #include "pbs_ifl.h"
 #include "pbs_error.h"
 #include "log.h"
@@ -249,7 +245,8 @@
 #define UPDATE_TO_MOM                     1
 #define MIN_SERVER_UDPATE_SPACING         3
 #define MAX_SERVER_UPDATE_SPACING         40
-#define MAX_GPUS  32
+#define NO_SERVER_CONFIGURED             -1
+#define COULD_NOT_CONTACT_SERVER         -2
 
 #ifdef NUMA_SUPPORT
 extern int numa_index;
@@ -312,22 +309,13 @@ extern char *dependent(char *res, struct rm_attribute *attr);
 extern char *reqgres(struct rm_attribute *);
 extern void send_update_soon();
 
-
 #ifdef NVIDIA_GPUS
-extern int find_file(char *, char *);
-extern char  mom_host[];
-extern int             MOMNvidiaDriverVersion;
 extern int  use_nvidia_gpu;
-#endif  /* NVIDIA_GPUS */
-
+#endif
 
 void check_state(int);
 void state_to_server(int, int);
 void node_comm_error(node_comm_t *, char *);
-#ifdef NVIDIA_GPUS
-int    nvidia_gpu_modes[50];
-#endif  /* NVIDIA_GPUS */
-
 
 
 /* clear servers */
@@ -506,8 +494,8 @@ int mom_server_add(
   else if ((pms = mom_server_find_empty_slot()) != NULL)
     {
     /* Fill in the new server instance */
+    snprintf(tmp_server_name, sizeof(tmp_server_name), "%s", value);
 
-    strncpy(tmp_server_name, value, PBS_MAXSERVERNAME);
     colon = strchr(tmp_server_name,':');
     if (colon != NULL)
       {
@@ -526,7 +514,7 @@ int mom_server_add(
       }
 
     /* copy the server name and set up the sock address */
-    strncpy(pms->pbs_servername,tmp_server_name,PBS_MAXSERVERNAME);
+    snprintf(pms->pbs_servername, sizeof(pms->pbs_servername), "%s", tmp_server_name);
 
     pms->sock_addr.sin_addr = ((struct sockaddr_in *)addr_info->ai_addr)->sin_addr;
     pms->sock_addr.sin_family = AF_INET;
@@ -981,1012 +969,6 @@ stat_record stats[] = {
   };
 
 
-/*
- * Function to initialize the Nvidia nvml api
- */
-#if defined(NVIDIA_GPUS) && defined(NVML_API)
-void log_nvml_error(
-  nvmlReturn_t  rc,
-  char*         gpuid,
-  const char*   id)
-  {
-
-  switch (rc)
-    {
-    case NVML_SUCCESS:
-      if (LOGLEVEL >= 3)
-        {
-        log_err(
-          PBSE_RMSYSTEM,
-          id,
-          "Successful");
-        }
-      break;
-    case NVML_ERROR_ALREADY_INITIALIZED:
-      if (LOGLEVEL >= 3)
-        {
-        log_err(
-          PBSE_RMSYSTEM,
-          id,
-          "Already initialized");
-        }
-      break;
-    case NVML_ERROR_NO_PERMISSION:
-      if (LOGLEVEL >= 1)
-        {
-        log_err(
-          PBSE_RMSYSTEM,
-          id,
-          "No permission");
-        }
-      break;
-    case NVML_ERROR_INVALID_ARGUMENT:
-      if (LOGLEVEL >= 1)
-        {
-        log_err(
-          PBSE_RMSYSTEM,
-          id,
-          "NVML invalid argument");
-        }
-      break;
-    case NVML_ERROR_NOT_FOUND:
-      if (LOGLEVEL >= 1)
-        {
-        sprintf(log_buffer, "NVML device %s not found",
-          (gpuid != NULL) ? gpuid : "NULL");
-        log_err(
-          PBSE_RMSYSTEM,
-          id,
-          log_buffer);
-        }
-      break;
-    case NVML_ERROR_NOT_SUPPORTED:
-      if (LOGLEVEL >= 1)
-        {
-        sprintf(log_buffer, "NVML device %s not supported",
-          (gpuid != NULL) ? gpuid : "NULL");
-        log_err(
-          PBSE_RMSYSTEM,
-          id,
-          log_buffer);
-        }
-      break;
-    case NVML_ERROR_UNKNOWN:
-      if (LOGLEVEL >= 1)
-        {
-        log_err(
-          PBSE_RMSYSTEM,
-          id,
-          "Unknown error");
-        }
-      break;
-    default:
-      if (LOGLEVEL >= 1)
-        {
-        sprintf(log_buffer, "Unexpected error code %d",
-          rc);
-        log_err(
-          PBSE_RMSYSTEM,
-          id,
-          log_buffer);
-        }
-      break;
-    }
-  }
-#endif  /* NVIDIA_GPUS and NVML_API */
-
-
-
-/*
- * Function to initialize the Nvidia nvml api
- */
-#if defined(NVIDIA_GPUS) && defined(NVML_API)
-int init_nvidia_nvml()
-  {
-  static char id[] = "init_nvidia_nvml";
-
-  nvmlReturn_t  rc;
-  unsigned int      device_count;
-
-  rc = nvmlInit();
-
-  if (rc == NVML_SUCCESS)
-    {
-    rc = nvmlDeviceGetCount(&device_count);
-    if (rc == NVML_SUCCESS)
-      {
-      if ((int)device_count > 0)
-        return (TRUE);
-
-      sprintf(log_buffer,"No Nvidia gpus detected\n");
-      log_ext(-1, id, log_buffer, LOG_DEBUG);
-
-      /* since we detected no gpus, shut down nvml */
-
-      shut_nvidia_nvml();
-
-      return (FALSE);
-      }
-    }
-
-  log_nvml_error (rc, NULL, id);
-
-  return (FALSE);
-  }
-#endif  /* NVIDIA_GPUS and NVML_API */
-
-
-
-/*
- * Function to shutdown the Nvidia nvml api
- */
-#if defined(NVIDIA_GPUS) && defined(NVML_API)
-int shut_nvidia_nvml()
-  {
-  static char id[] = "shut_nvidia_nvml";
-
-  nvmlReturn_t  rc;
-
-  if (!use_nvidia_gpu)
-    return (TRUE);
-
-  rc = nvmlShutdown();
-
-  if (rc == NVML_SUCCESS)
-    return (TRUE);
-
-  log_nvml_error (rc, NULL, id);
-
-  return (FALSE);
-  }
-#endif  /* NVIDIA_GPUS and NVML_API */
-
-
-
-/*
- * Function to get the NVML device handle
- */
-
-#if defined(NVIDIA_GPUS) && defined(NVML_API)
-nvmlDevice_t get_nvml_device_handle(
-  char *gpuid)
-  {
-  static char id[] = "get_nvml_device_handle";
-
-  nvmlReturn_t      rc;
-  nvmlDevice_t      device_hndl;
-  char             *ptr;
-  unsigned int      index;
-
-  /* if gpuid contains a : then try to get the device handle by pci bus id */
-
-  ptr = strchr(gpuid, ':');
-  if (ptr != NULL)
-    {
-    rc = nvmlDeviceGetHandleByPciBusId(gpuid, &device_hndl);
-    }
-  else
-    {
-    /* try to get the device handle by index */
-
-    index = atoi(gpuid);
-    rc = nvmlDeviceGetHandleByIndex(index, &device_hndl);
-    }
-
-  if (rc == NVML_SUCCESS)
-    return (device_hndl);
-
-  log_nvml_error (rc, gpuid, id);
-
-  return (NULL);
-
-  }
-#endif  /* NVIDIA_GPUS and NVML_API */
-
-
-#ifdef NVIDIA_GPUS
-/*
- * Function to determine if the nvidia kernel module is loaded
- */
-static int check_nvidia_module_loaded()
-  {
-  static char id[] = "check_nvidia_module_loaded";
-  char line[4096];
-  FILE *file;
-
-  file = fopen("/proc/modules", "r");
-  if (!file)
-    {
-    if (LOGLEVEL >= 3)
-      {
-      log_err(
-        errno,
-        id,
-        "Failed to read /proc/modules");
-      }
-    return(FALSE);
-    }
-
-  while (fgets(line, sizeof(line), file))
-    {
-    char *tok = strtok(line, " \t");
-
-    if (tok)
-      {
-      if (strcmp(tok, "nvidia") == 0)
-        {
-        fclose(file);
-        return(TRUE);
-        }
-      }
-    }
-
-  if (LOGLEVEL >= 3)
-    {
-    log_err(
-      PBSE_RMSYSTEM,
-      id,
-      "No Nvidia driver loaded");
-    }
-
-  fclose(file);
-  return(FALSE);
-  }
-
-#endif  /* NVIDIA_GPUS */
-
-
-
-#ifdef NVIDIA_GPUS
-/*
- * Function to get the nvidia driver version
- */
-static int check_nvidia_version_file()
-  {
-  static char id[] = "check_nvidia_version_file";
-  char line[4096];
-  FILE *file;
-
-  /* if file does not exist then version is too old */
-  file = fopen("/proc/driver/nvidia/version", "r");
-  if (!file)
-    {
-    if (LOGLEVEL >= 3)
-      {
-      log_err(
-        PBSE_RMSYSTEM,
-        id,
-        "No Nvidia driver info available. Driver not supported?");
-      }
-    return(FALSE);
-    }
-
-  while (fgets(line, sizeof(line), file))
-    {
-    char *tok;
-
-    if (strncmp(line, "NVRM", 4) == 0)
-      {
-      if (LOGLEVEL >= 3)
-        {
-        sprintf(log_buffer,"Nvidia driver info: %s\n", line);
-        log_ext(-1, id, log_buffer, LOG_DEBUG);
-        }
-      tok = strstr(line, "Kernel Module");
-      if (tok)
-        {
-        tok += 13;
-        MOMNvidiaDriverVersion = atoi(tok);
-        if (MOMNvidiaDriverVersion >= 260)
-          {
-          fclose(file);
-          return(TRUE);
-          }
-        break;
-        }
-      }
-    }
-
-  fclose(file);
-  return(FALSE);
-  }
-
-#endif  /* NVIDIA_GPUS */
-
-
-
-/*
- * Function to determine if nvidia-smi is setup correctly
- */
-#ifdef NVIDIA_GPUS
-int check_nvidia_setup()
-  {
-#ifndef NVML_API
-  int  rc;
-#endif
-  static int check_setup = TRUE;
-  static int nvidia_setup_is_ok = FALSE;
-
-  /* Check the setup for the nvidia gpus */
-
-  if (check_setup)
-    {
-#ifndef NVML_API
-    char *pathEnv;
-#endif
-
-    /* only check the setup once */
-    check_setup = FALSE;
-
-    /* check if the nvidia module is loaded in */
-
-    if (!check_nvidia_module_loaded())
-      {
-      return (FALSE);
-      }
-
-    /* see if we can get the nvidia driver version */
-
-    if (!check_nvidia_version_file())
-      {
-      return (FALSE);
-      }
-
-#ifdef NVML_API
-    nvidia_setup_is_ok = TRUE;
-#else
-    /* Get the PATH environment variable so we can see
-     * if the nvidia-smi executable is in the execution path
-     */
-
-    pathEnv = getenv("PATH");
-
-    if (pathEnv == NULL)
-      {
-      if (LOGLEVEL >= 3)
-        {
-        log_err(PBSE_RMSYSTEM, __func__, "cannot get PATH");
-        }
-      return(FALSE);
-      }
-
-    /* We have the PATH, now find the nvidia-smi executable */
-    rc = find_file(pathEnv, "nvidia-smi");
-    if (rc == FALSE)
-      {
-      if (LOGLEVEL >= 3)
-        {
-        log_err(PBSE_RMSYSTEM, __func__, "cannot find nvidia-smi in PATH");
-        }
-      return(FALSE);
-      }
-    nvidia_setup_is_ok = TRUE;
-#endif  /* NVML_API */
-    }
-  return (nvidia_setup_is_ok);
-  }
-#endif  /* NVIDIA_GPUS */
-
-
-/*
- * Function to collect nvidia-smi data
- */
-
-#ifdef NVIDIA_GPUS
-static char *gpus(
-
-  char *buffer,
-  int   buffer_size)
-
-  {
-  FILE *fd;
-  char *ptr; /* pointer to the current place to copy data into munge_buf */
-  int  bytes_read;
-  int  total_bytes_read = 0;
-  char buf[RETURN_STRING_SIZE];
-  char cmdbuf[101];
-
-  if (!check_nvidia_setup())
-    {
-    return (FALSE);
-    }
-
-  if (MOMNvidiaDriverVersion >= 270)
-    {
-    sprintf(cmdbuf, "nvidia-smi -q -x 2>&1");
-    }
-  else /* 260 driver */
-    {
-    sprintf(cmdbuf, "nvidia-smi -a -x 2>&1");
-    }
-
-  if (LOGLEVEL >= 7)
-    {
-    sprintf(log_buffer,"%s: GPU cmd issued: %s\n", __func__, cmdbuf);
-    log_ext(-1, __func__, log_buffer, LOG_DEBUG);
-    }
-
-	if ((fd = popen(cmdbuf, "r")) != NULL)
-		{
-    memset(buffer, 0, buffer_size);
-    ptr = buffer;
-    do
-      {
-      bytes_read = fread(buf, sizeof(char), MUNGE_SIZE, fd);
-      if (bytes_read > 0)
-        {
-        total_bytes_read += bytes_read;
-        memcpy(ptr, buf, bytes_read);
-        ptr += bytes_read;
-        }
-      } while(bytes_read > 0);
-
-    pclose(fd);
-    
-    if (bytes_read == -1)
-      {
-      /* read failed */
-      if (LOGLEVEL >= 0)
-        {
-        sprintf(log_buffer, "error reading popen pipe");
-        
-        log_err(PBSE_RMSYSTEM, __func__, log_buffer);
-        }
-      return(NULL);
-      }
-    }
-  else
-    {
-    if (LOGLEVEL >= 0)
-      {
-      sprintf(log_buffer, "error %d (%s) on popen", errno, strerror(errno));
-
-      log_err(PBSE_RMSYSTEM, __func__, log_buffer);
-      }
-    return(NULL);
-    }
-
-  return(buffer);
-  }
-#endif  /* NVIDIA_GPUS */
-
-
-/*
- * Function to collect gpu modes
- */
-
-#ifdef NVIDIA_GPUS
-static int gpumodes(
-  int  buffer[],
-  int  buffer_size)
-  {
-  static char id[] = "gpumodes";
-
-  FILE *fd;
-  char *ptr; /* pointer to the current place to copy data into buf */
-  char buf[201];
-  int  idx;
-  int  gpuid;
-  int  gpumode;
-
-  if (!check_nvidia_setup())
-    {
-    return (FALSE);
-    }
-
-  for (idx=0; idx<buffer_size; idx++)
-    {
-    buffer[idx] = -1;
-    }
-
-  /* this only works for Nvidia driver version 260 */
-
-  if (LOGLEVEL >= 7)
-    {
-    sprintf(log_buffer,"%s: GPU cmd issued: %s\n", id, "nvidia-smi -s 2>&1");
-    log_ext(-1, id, log_buffer, LOG_DEBUG);
-    }
-
-	if ((fd = popen("nvidia-smi -s 2>&1", "r")) != NULL)
-		{
-    while (!feof(fd))
-      {
-      if (fgets(buf, 200, fd))
-        {
-        ptr = buf;
-        ptr = strstr(ptr, "GPU");
-        if (ptr)
-          {
-          ptr += 4;
-          gpuid = atoi(ptr);
-
-          ptr = strchr(ptr, ':');
-          if (ptr)
-            {
-            ptr++;
-            gpumode = atoi(ptr);
-            }
-          buffer[gpuid] = gpumode;
-          }
-        }
-      }
-    pclose(fd);
-		}
-  else
-    {
-    if (LOGLEVEL >= 0)
-      {
-      sprintf(log_buffer, "error %d (%s) on popen", errno, strerror(errno));
-
-      log_err(
-        PBSE_RMSYSTEM,
-        id,
-        log_buffer);
-      }
-    return(FALSE);
-    }
-  return(TRUE);
-  }
-#endif  /* NVIDIA_GPUS */
-
-
-/*
- * Function to set gpu mode
- */
-
-#ifdef NVIDIA_GPUS
-int setgpumode(
-  char *gpuid,
-  int   gpumode)
-  {
-  static char id[] = "setgpumode";
-
-#ifdef NVML_API
-  nvmlReturn_t      rc;
-  nvmlComputeMode_t compute_mode;
-  nvmlDevice_t      device_hndl;
-
-  if (!check_nvidia_setup())
-    {
-    return (FALSE);
-    }
-
-  switch (gpumode)
-    {
-    case gpu_normal:
-      compute_mode = NVML_COMPUTEMODE_DEFAULT;
-      break;
-    case gpu_exclusive_thread:
-      compute_mode = NVML_COMPUTEMODE_EXCLUSIVE_THREAD;
-      break;
-    case gpu_prohibited:
-      compute_mode = NVML_COMPUTEMODE_PROHIBITED;
-      break;
-    case gpu_exclusive_process:
-      compute_mode = NVML_COMPUTEMODE_EXCLUSIVE_PROCESS;
-      break;
-    default:
-      if (LOGLEVEL >= 1)
-        {
-        sprintf(log_buffer, "Unexpected compute mode %d",
-          rc);
-        log_err(
-          PBSE_RMSYSTEM,
-          id,
-          log_buffer);
-        }
-      return (FALSE);
-    }
-
-  /* get the device handle */
-
-  device_hndl = get_nvml_device_handle(gpuid);
-
-  if (device_hndl != NULL)
-    {
-	  if (LOGLEVEL >= 7)
-	    {
-      sprintf(log_buffer, "changing to mode %d for gpu %s",
-			        gpumode,
-			        gpuid);
-
-      log_ext(-1, id, log_buffer, LOG_DEBUG);
-	    }
-
-    rc = nvmlDeviceSetComputeMode(device_hndl, compute_mode);
-
-    if (rc == NVML_SUCCESS)
-      return (TRUE);
-
-    log_nvml_error (rc, gpuid, id);
-    }
-
-  return(FALSE);
-
-#else
-  FILE *fd;
-  char buf[301];
-
-  if (!check_nvidia_setup())
-    {
-    return (FALSE);
-    }
-
-  /* build command to be issued */
-
-  if (MOMNvidiaDriverVersion == 260)
-    {
-    sprintf(buf, "nvidia-smi -g %s -c %d 2>&1",
-      gpuid,
-      gpumode);
-    }
-  else /* 270 or greater driver */
-    {
-    sprintf(buf, "nvidia-smi -i %s -c %d 2>&1",
-      gpuid,
-      gpumode);
-    }
-
-  if (LOGLEVEL >= 7)
-    {
-    sprintf(log_buffer,"%s: GPU cmd issued: %s\n", id, buf);
-    log_ext(-1, id, log_buffer, LOG_DEBUG);
-    }
-
-	if ((fd = popen(buf, "r")) != NULL)
-		{
-    while (!feof(fd))
-      {
-      if (fgets(buf, 300, fd))
-        {
-        int len = strlen(buf);
-        /* bypass blank lines */
-        if ((len == 1 ) && (buf[0] == '\n'))
-          {
-          continue;
-          }
-        /* for 270 and above we need to check the return string to see if it went okay */
-        /* 260 driver does not return anything on success */
-
-        if ((MOMNvidiaDriverVersion >= 270) &&
-            ((memcmp(buf, "Set compute mode to", 19) == 0) ||
-            (memcmp(buf, "Compute mode is already set to", 30) == 0)))
-          {
-          break;
-          }
-        if (LOGLEVEL >= 7)
-          {
-          sprintf(
-            log_buffer,
-            "nvidia-smi gpu change mode returned: %s",
-            buf);
-          log_ext(-1, id, log_buffer, LOG_INFO);
-          }
-        pclose(fd);
-        return(FALSE);
-        }
-      }
-    pclose(fd);
-		}
-  else
-    {
-    if (LOGLEVEL >= 0)
-      {
-      sprintf(log_buffer, "error %d (%s) on popen", errno, strerror(errno));
-
-      log_err(
-        PBSE_RMSYSTEM,
-        id,
-        log_buffer);
-      }
-    return(FALSE);
-    }
-
-  return(TRUE);
-#endif  /* NVML_API */
-  }
-#endif  /* NVIDIA_GPUS */
-
-
-
-/*
- * Function to reset gpu ecc count
- */
-
-#ifdef NVIDIA_GPUS
-int resetgpuecc(
-
-  char *gpuid,
-  int   reset_perm,
-  int   reset_vol)
-
-  {
-#ifdef NVML_API
-  nvmlReturn_t      rc;
-  nvmlEccBitType_t  counter_type;
-  nvmlDevice_t      device_hndl;
-
-  if (!check_nvidia_setup())
-    {
-    return (FALSE);
-    }
-
-  if (reset_perm == 1)
-    {
-    /* reset ecc counts */
-    counter_type = NVML_AGGREGATE_ECC;
-    }
-  else if (reset_vol == 1)
-    {
-    /* reset volatile ecc counts */
-    counter_type = NVML_AGGREGATE_ECC;
-    }
-
-  /* get the device handle */
-
-  device_hndl = get_nvml_device_handle(gpuid);
-
-  if (device_hndl != NULL)
-    {
-	  if (LOGLEVEL >= 7)
-	    {
-		  sprintf(log_buffer, "reseting error count %d-%d for gpu %s",
-						  reset_perm,
-						  reset_vol,
-						  gpuid);
-
-		  log_ext(-1, __func__, log_buffer, LOG_DEBUG);
-	    }
-
-    rc = nvmlDeviceClearEccErrorCounts(device_hndl, counter_type);
-
-    if (rc == NVML_SUCCESS)
-      return (TRUE);
-
-    log_nvml_error (rc, gpuid, __func__);
-    }
-
-  return(FALSE);
-
-#else
-  FILE *fd;
-  char buf[301];
-
-  if (!check_nvidia_setup())
-    {
-    return (FALSE);
-    }
-
-  /* build command to be issued */
-
-  if (MOMNvidiaDriverVersion == 260)
-    {
-    sprintf(buf, "nvidia-smi -g %s",
-      gpuid);
-
-    if (reset_perm == 1)
-      {
-      /* reset permanent ecc counts */
-      strcat (buf, " -p");
-      }
-
-    if (reset_vol == 1)
-      {
-      /* reset volatile ecc counts */
-      strcat (buf, " -v");
-      }
-    }
-  else /* 270 or greater driver */
-    {
-    sprintf(buf, "nvidia-smi -i %s",
-      gpuid);
-
-    /* 270 can currently reset only 1 at a time */
-
-    if (reset_perm == 1)
-      {
-      /* reset ecc counts */
-      strcat (buf, " -p 1");
-      }
-    else if (reset_vol == 1)
-      {
-      /* reset volatile ecc counts */
-      strcat (buf, " -p 0");
-      }
-    }
-
-  strcat(buf, " 2>&1");
-
-  if (LOGLEVEL >= 7)
-    {
-    sprintf(log_buffer,"%s: GPU cmd issued: %s\n", __func__, buf);
-    log_ext(-1, __func__, log_buffer, LOG_DEBUG);
-    }
-
-	if ((fd = popen(buf, "r")) != NULL)
-		{
-    while (!feof(fd))
-      {
-      if (fgets(buf, 300, fd))
-        {
-        int len = strlen(buf);
-        /* bypass blank lines */
-        if ((len == 1 ) && (buf[0] == '\n'))
-          {
-          continue;
-          }
-        /* for 270 we need to check the return string to see if it went okay */
-        /* 260 driver does not return anything on success */
-
-        if ((MOMNvidiaDriverVersion >= 270) &&
-            ((memcmp(buf, "Reset volatile ECC errors to zero", 33) == 0) ||
-            (memcmp(buf, "Reset aggregate ECC errors to zero", 34) == 0)))
-          {
-          break;
-          }
-        if (LOGLEVEL >= 7)
-          {
-          sprintf(
-            log_buffer,
-            "nvidia-smi gpu reset ecc returned: %s",
-            buf);
-          log_ext(-1, __func__, log_buffer, LOG_INFO);
-          }
-        pclose(fd);
-        return(FALSE);
-        }
-      }
-    pclose(fd);
-		}
-  else
-    {
-    if (LOGLEVEL >= 0)
-      {
-      sprintf(log_buffer, "error %d (%s) on popen", errno, strerror(errno));
-
-      log_err(PBSE_RMSYSTEM, __func__, log_buffer);
-      }
-    return(FALSE);
-    }
-  return(TRUE);
-#endif  /* NVML_API */
-  }
-#endif  /* NVIDIA_GPUS */
-
-
-
-
-
-#ifdef NVIDIA_GPUS
-/*
- * uses the gpu_flags to determine what to set up for job
- *
- * @param pjob - the job to set up gpus for
- * @return PBSE_NONE if success, error code otherwise
- */
-int setup_gpus_for_job(
-
-  job  *pjob) /* I */
-
-  {
-  static char *id = "setup_gpus_for_job";
-
-  char *gpu_str;
-  char *ptr;
-  char  tmp_str[PBS_MAXHOSTNAME + 10];
-  int   gpu_flags = 0;
-  char  gpu_id[30];
-  int   gpu_mode = -1;
-
-  /* if node does not have Nvidia recognized driver version then forget it */
-
-  if (MOMNvidiaDriverVersion < 260)
-    return(PBSE_NONE);
-
-  /* if there are no gpus, do nothing */
-  if ((pjob->ji_wattr[JOB_ATR_exec_gpus].at_flags & ATR_VFLAG_SET) == 0)
-    return(PBSE_NONE);
-
-  /* if there are no gpu flags, do nothing */
-  if ((pjob->ji_wattr[JOB_ATR_gpu_flags].at_flags & ATR_VFLAG_SET) == 0)
-    return(PBSE_NONE);
-
-  gpu_str = pjob->ji_wattr[JOB_ATR_exec_gpus].at_val.at_str;
-
-  if (gpu_str == NULL)
-    return(PBSE_NONE);
-
-  gpu_flags = pjob->ji_wattr[JOB_ATR_gpu_flags].at_val.at_long;
-
-  if (LOGLEVEL >= 7)
-    {
-		sprintf(log_buffer, "job %s has exec_gpus %s gpu_flags %d",
-						pjob->ji_qs.ji_jobid,
-						gpu_str,
-						gpu_flags);
-
-	  log_ext(-1, id, log_buffer, LOG_DEBUG);
-    }
-
-  /* traverse the gpu_str to see what gpus we have assigned */
-
-  strcpy(tmp_str, mom_host);
-  strcat(tmp_str, "-gpu/");
-
-  ptr = strstr(gpu_str, tmp_str);
-  
-  if (ptr == NULL)
-    {
-    /* might be fully qualified host name */
-    strcpy(tmp_str, mom_host);
-    ptr = strchr(tmp_str, '.');
-    if (ptr != NULL)
-      ptr[0] = '\0';
-
-    strcat(tmp_str, "-gpu/");
-    ptr = strstr(gpu_str, tmp_str);
-    }
-
-  while(ptr != NULL)
-    {
-    ptr = strchr(ptr, '/');
-    if (ptr != NULL)
-      {
-      ptr++;
-      sprintf(gpu_id,"%d",atoi(ptr));
-
-      /* do we need to reset volatile error counts on gpu */
-      if (gpu_flags >= 1000)
-        {
-        if (LOGLEVEL >= 7)
-          {
-    		  sprintf(log_buffer, "job %s reseting gpuid %s volatile error counts",
-						  pjob->ji_qs.ji_jobid,
-						  gpu_id);
-
-	        log_ext(-1, id, log_buffer, LOG_DEBUG);
-          }
-
-        resetgpuecc(gpu_id, 0, 1);
-        }
-
-      gpu_mode = gpu_flags;
-      if (gpu_mode  >= 1000)
-        {
-        gpu_mode -= 1000;
-        }
-
-      /* do we need to change modes on gpu */
-      if (nvidia_gpu_modes[atoi(ptr)] != gpu_mode)
-        {
-        if (LOGLEVEL >= 7)
-          {
-    		  sprintf(log_buffer, "job %s change to mode %d for gpuid %s",
-					    pjob->ji_qs.ji_jobid,
-					    gpu_mode,
-					    gpu_id);
-
-          log_ext(-1, id, log_buffer, LOG_DEBUG);
-          }
-
-        setgpumode(gpu_id, gpu_mode);
-        }
-
-      ptr = strstr(ptr, tmp_str);
-      }
-    }
-
-  /* do we need to change mode on gpu */
-
-
-  return(PBSE_NONE);
-  } /* END setup_gpus_for_job() */
-#endif  /* NVIDIA_GPUS */
-
-
-
-
-
 
 
 /**
@@ -2029,759 +1011,6 @@ int generate_server_status(
   }  /* END generate_server_status */
 
 
-
-/*
- * Function to collect gpu statuses to be sent to server. (Currently Nvidia only)
- */
-#ifdef NVML_API
-
-void generate_server_gpustatus_nvml(
-
-  dynamic_string *gpu_status)
-
-  {
-  nvmlReturn_t        rc;
-  unsigned int        device_count;
-  unsigned int        tmpint;
-  int                 idx;
-  nvmlDevice_t        device_hndl;
-  nvmlPciInfo_t       pci_info;
-  nvmlMemory_t        mem_info;
-  nvmlComputeMode_t   comp_mode;
-  nvmlEnableState_t   ecc_mode;
-  nvmlEnableState_t   ecc_pend_mode;
-  nvmlEnableState_t   display_mode;
-  nvmlUtilization_t   util_info;
-  unsigned long long  ecc_counts;
-  char                tmpbuf[1024+1];
-
-  if (!check_nvidia_setup())
-    {
-    return;
-    }
-
-   /* get timestamp to report */
-   snprintf(tmpbuf, 100, "timestamp=%s", ctime(&time_now));
-
-  copy_to_end_of_dynamic_string(gpu_status, tmpbuf);
-
-  /* get the driver version to report */
-  rc = nvmlSystemGetDriverVersion(tmpbuf, 1024);
-  if (rc == NVML_SUCCESS)
-    {
-    copy_to_end_of_dynamic_string(gpu_status, "driver_ver=");
-    append_dynamic_string(gpu_status, tmpbuf);
-    }
-  else
-    {
-    log_nvml_error (rc, NULL, __func__);
-    }
-
-  /* get the device count */
-  
-  rc = nvmlDeviceGetCount(&device_count);
-  if (rc != NVML_SUCCESS)
-    {
-    log_nvml_error (rc, NULL, __func__);
-    return;
-    }
-  
-  /* get the device handle for each gpu and report the data */
-  for (idx = 0; idx < (int)device_count; idx++)
-    {
-    rc = nvmlDeviceGetHandleByIndex(idx, &device_hndl);
-
-    if (rc != NVML_SUCCESS)
-      {
-      log_nvml_error (rc, NULL, __func__);
-      continue;
-      }
-
-    /* get the PCI info */
-    rc = nvmlDeviceGetPciInfo(device_hndl, &pci_info);
-
-    if (rc == NVML_SUCCESS)
-      {
-      copy_to_end_of_dynamic_string(gpu_status, "gpuid=");
-      append_dynamic_string(gpu_status, pci_info.busId);
-
-      copy_to_end_of_dynamic_string(gpu_status, "gpu_pci_device_id=");
-      snprintf(tmpbuf, 100, "%d", pci_info.pciDeviceId);
-      append_dynamic_string(gpu_status, tmpbuf);
-
-      copy_to_end_of_dynamic_string(gpu_status, "gpu_pci_location_id=");
-      append_dynamic_string(gpu_status, pci_info.busId);
-      }
-    else
-      {
-      log_nvml_error (rc, NULL, __func__);
-      }
-
-    /* get the product name */
-    rc = nvmlDeviceGetName(device_hndl, tmpbuf, 1024);
-
-    if (rc == NVML_SUCCESS)
-      {
-      copy_to_end_of_dynamic_string(gpu_status, "gpu_product_name=");
-      append_dynamic_string(gpu_status, tmpbuf);
-      }
-    else
-      {
-      log_nvml_error (rc, NULL, __func__);
-      }
-
-    /* get the display mode */
-    rc = nvmlDeviceGetDisplayMode(device_hndl, &display_mode);
-
-    if (rc == NVML_SUCCESS)
-      {
-      copy_to_end_of_dynamic_string(gpu_status, "gpu_display=Enabled");
-      }
-    else if (rc == NVML_ERROR_INVALID_ARGUMENT)
-      {
-      copy_to_end_of_dynamic_string(gpu_status, "gpu_display=Disabled");
-      }
-    else
-      {
-      log_nvml_error (rc, NULL, __func__);
-      }
-
-    /* get the fan speed */
-    rc = nvmlDeviceGetFanSpeed(device_hndl, &tmpint);
-
-    if (rc == NVML_SUCCESS)
-      {
-      snprintf(tmpbuf, 20, "gpu_fan_speed=%d%%", tmpint);
-      copy_to_end_of_dynamic_string(gpu_status, tmpbuf);
-      }
-    else
-      {
-      log_nvml_error (rc, NULL, __func__);
-      }
-
-    /* get the memory information */
-    rc = nvmlDeviceGetMemoryInfo(device_hndl, &mem_info);
-
-    if (rc == NVML_SUCCESS)
-      {
-      snprintf(tmpbuf, 50, "gpu_memory_total=%lld MB", (mem_info.total/(1024*1024)));
-      copy_to_end_of_dynamic_string(gpu_status, tmpbuf);
-
-      snprintf(tmpbuf, 50, "gpu_memory_used=%lld MB", (mem_info.used/(1024*1024)));
-      copy_to_end_of_dynamic_string(gpu_status, tmpbuf);
-      }
-    else
-      {
-      log_nvml_error (rc, NULL, __func__);
-      }
-
-    /* get the compute mode */
-
-    rc = nvmlDeviceGetComputeMode(device_hndl, &comp_mode);
-
-    if (rc == NVML_SUCCESS)
-      {
-      copy_to_end_of_dynamic_string(gpu_status, "gpu_mode=");
-      switch (comp_mode)
-        {
-        case NVML_COMPUTEMODE_DEFAULT:
-
-          append_dynamic_string(gpu_status, "Default");
-          nvidia_gpu_modes[idx] = gpu_normal;
-          break;
-          
-        case NVML_COMPUTEMODE_EXCLUSIVE_THREAD:
-
-          append_dynamic_string(gpu_status, "Exclusive_Thread");
-          nvidia_gpu_modes[idx] = gpu_exclusive_thread;
-          break;
-          
-        case NVML_COMPUTEMODE_PROHIBITED:
-
-          append_dynamic_string(gpu_status, "Prohibited");
-          nvidia_gpu_modes[idx] = gpu_prohibited;
-          break;
-
-        case NVML_COMPUTEMODE_EXCLUSIVE_PROCESS:
-
-          append_dynamic_string(gpu_status, "Exclusive_Process");
-          nvidia_gpu_modes[idx] = gpu_exclusive_process;
-          break;
-          
-        default:
-
-          append_dynamic_string(gpu_status, "Unknown");
-          nvidia_gpu_modes[idx] = -1;
-          break;
-        }
-      }
-    else
-      {
-      log_nvml_error (rc, NULL, __func__);
-      }
-
-    /* get the utilization rates */
-
-    rc = nvmlDeviceGetUtilizationRates(device_hndl, &util_info);
-
-    if (rc == NVML_SUCCESS)
-      {
-      snprintf(tmpbuf, 100, "gpu_utilization=%d%%", util_info.gpu);
-      copy_to_end_of_dynamic_string(gpu_status, tmpbuf);
-
-      snprintf(tmpbuf, 100, "gpu_memory_utilization=%d%%", util_info.memory);
-      copy_to_end_of_dynamic_string(gpu_status, tmpbuf);
-      }
-    else
-      {
-      log_nvml_error (rc, NULL, __func__);
-      }
-
-    /* get the ECC mode */
-
-    rc = nvmlDeviceGetEccMode(device_hndl, &ecc_mode, &ecc_pend_mode);
-
-    if (rc == NVML_SUCCESS)
-      {
-      snprintf(tmpbuf, 50, "gpu_ecc_mode=%s",
-        (ecc_mode == NVML_FEATURE_ENABLED) ? "Enabled" : "Disabled");
-      copy_to_end_of_dynamic_string(gpu_status, tmpbuf);
-      }
-    else
-      {
-      log_nvml_error (rc, NULL, __func__);
-      }
-
-    /* get the single bit ECC errors */
-
-    rc = nvmlDeviceGetTotalEccErrors(device_hndl, NVML_SINGLE_BIT_ECC,
-        NVML_AGGREGATE_ECC, &ecc_counts);
-
-    if (rc == NVML_SUCCESS)
-      {
-      snprintf(tmpbuf, 100, "gpu_single_bit_ecc_errors=%lld", ecc_counts);
-      copy_to_end_of_dynamic_string(gpu_status, tmpbuf);
-      }
-    else
-      {
-      log_nvml_error (rc, NULL, __func__);
-      }
-
-    /* get the double bit ECC errors */
-
-    rc = nvmlDeviceGetTotalEccErrors(device_hndl, NVML_DOUBLE_BIT_ECC,
-        NVML_AGGREGATE_ECC, &ecc_counts);
-
-    if (rc == NVML_SUCCESS)
-      {
-      snprintf(tmpbuf, 100, "gpu_double_bit_ecc_errors=%lld", ecc_counts);
-      copy_to_end_of_dynamic_string(gpu_status, tmpbuf);
-      }
-    else
-      {
-      log_nvml_error (rc, NULL, __func__);
-      }
-
-    /* get the temperature */
-
-    rc = nvmlDeviceGetTemperature(device_hndl, NVML_TEMPERATURE_GPU, &tmpint);
-
-    if (rc == NVML_SUCCESS)
-      {
-      snprintf(tmpbuf, 25, "gpu_temperature=%d C", tmpint);
-      copy_to_end_of_dynamic_string(gpu_status, tmpbuf);
-      }
-    else
-      {
-      log_nvml_error (rc, NULL, __func__);
-      }
-
-    }
-
-  return;
-
-  }
-#endif  /* NVML_API */
-
-
-
-/*
- * Function to collect gpu statuses to be sent to server. (Currently Nvidia only)
- */
-#ifdef NVIDIA_GPUS
-
-void generate_server_gpustatus_smi(
-
-  dynamic_string *gpu_status)
-
-  {
-  char   *dataptr;
-  char   *tmpptr1;
-  char   *tmpptr2;
-  char   *savptr;
-  /* 
-   * we hope we don't get more than 32 gpus on a node so we guess at how much
-   * data might get returned from nvidia-smi. xml inflates return data.
-   */
-  char gpu_string[MAX_GPUS * 3000];
-  int  gpu_modes[MAX_GPUS];
-  int     have_modes = FALSE;
-  int     gpuid = -1;
-  mxml_t *EP;
-  char   *Tail;
-  char    Emsg[MAXLINE];
-
-  dataptr = gpus(gpu_string, sizeof(gpu_string));
-
-  if (dataptr == NULL)
-    {
-    return;
-    }
-
-  /* move past the php code*/
-  if ((dataptr = strstr(gpu_string, "<timestamp>")) != NULL)
-    {
-    MXMLFromString(&EP, dataptr, &Tail, Emsg, sizeof(Emsg));
-    copy_to_end_of_dynamic_string(gpu_status, "timestamp=");
-    append_dynamic_string(gpu_status, EP->Val);
-    MXMLDestroyE(&EP);
-    }
-  else
-    {
-    return;
-    }
-
-  if ((dataptr = strstr(gpu_string, "<driver_version>")) != NULL)
-    {
-    MXMLFromString(&EP, dataptr, &Tail, Emsg, sizeof(Emsg));
-    copy_to_end_of_dynamic_string(gpu_status, "driver_ver=");
-    append_dynamic_string(gpu_status, EP->Val);
-    MXMLDestroyE(&EP);
-    }
-  else
-    {
-    /* cannot determine driver version */
-    copy_to_end_of_dynamic_string(gpu_status, "driver_ver=UNKNOWN");
-    return;
-    }
-
-  while ((dataptr = strstr(dataptr, "<gpu id=")) != NULL)
-    {
-    if (dataptr)
-      {
-      MXMLFromString(&EP, dataptr, &Tail, Emsg, sizeof(Emsg));
-      copy_to_end_of_dynamic_string(gpu_status, "gpuid=");
-      append_dynamic_string(gpu_status, EP->AVal[0]);
-      if (MOMNvidiaDriverVersion == 260)
-        {
-        gpuid = atoi(EP->AVal[0]);
-        }
-      else
-        {
-        gpuid++;
-        }
-      MXMLDestroyE(&EP);
-      
-      if (MOMNvidiaDriverVersion == 260)
-        {
-        /* Get and add mode rules information for driver 260 */
-        
-        if (!have_modes)
-          {
-          have_modes = gpumodes(gpu_modes, 32);
-          }
-        
-        copy_to_end_of_dynamic_string(gpu_status, "gpu_mode=");
-        switch (gpu_modes[gpuid])
-          {
-          case 0:
-
-            append_dynamic_string(gpu_status, "Normal");
-            nvidia_gpu_modes[gpuid] = gpu_normal;
-
-            break;
-
-          case 1:
-
-            append_dynamic_string(gpu_status, "Exclusive");
-            nvidia_gpu_modes[gpuid] = gpu_exclusive_thread;
-
-            break;
-
-          case 2:
-
-            append_dynamic_string(gpu_status, "Prohibited");
-            nvidia_gpu_modes[gpuid] = gpu_prohibited;
-
-            break;
-
-          default:
-
-            append_dynamic_string(gpu_status, "None");
-            nvidia_gpu_modes[gpuid] = -1;
-
-            break;
-          }
-        
-        savptr = dataptr;
-        if ((dataptr = strstr(dataptr, "<prod_name>")) != NULL)
-          {
-          MXMLFromString(&EP, dataptr, &Tail, Emsg, sizeof(Emsg));
-          copy_to_end_of_dynamic_string(gpu_status, "gpu_product_name=");
-          append_dynamic_string(gpu_status, EP->Val);
-          }
-        else
-          {
-          dataptr = savptr;
-          }
-        
-        savptr = dataptr;
-        if ((dataptr = strstr(dataptr, "<pci_device_id>")) != NULL)
-          {
-          MXMLFromString(&EP, dataptr, &Tail, Emsg, sizeof(Emsg));
-          copy_to_end_of_dynamic_string(gpu_status, "gpu_pci_device_id=");
-          append_dynamic_string(gpu_status, EP->Val);
-          MXMLDestroyE(&EP);
-          }
-        else
-          {
-          dataptr = savptr;
-          }
-        
-        savptr = dataptr;
-        if ((dataptr = strstr(dataptr, "<pci_location_id>")) != NULL)
-          {
-          MXMLFromString(&EP, dataptr, &Tail, Emsg, sizeof(Emsg));
-          copy_to_end_of_dynamic_string(gpu_status, "gpu_pci_location_id=");
-          append_dynamic_string(gpu_status, EP->Val);
-          MXMLDestroyE(&EP);
-          }
-        else
-          {
-          dataptr = savptr;
-          }
-        
-        savptr = dataptr;
-        if ((dataptr = strstr(dataptr, "<display>")) != NULL)
-          {
-          MXMLFromString(&EP, dataptr, &Tail, Emsg, sizeof(Emsg));
-          copy_to_end_of_dynamic_string(gpu_status, "gpu_display=");
-          append_dynamic_string(gpu_status, EP->Val);
-          MXMLDestroyE(&EP);
-          }
-        else
-          {
-          dataptr = savptr;
-          }
-        
-        savptr = dataptr;
-        if ((dataptr = strstr(dataptr, "<temp>")) != NULL)
-          {
-          MXMLFromString(&EP, dataptr, &Tail, Emsg, sizeof(Emsg));
-          copy_to_end_of_dynamic_string(gpu_status, "gpu_temperature=");
-          append_dynamic_string(gpu_status, EP->Val);
-          MXMLDestroyE(&EP);
-          }
-        else
-          {
-          dataptr = savptr;
-          }
-        
-        savptr = dataptr;
-        if ((dataptr = strstr(dataptr, "<fan_speed>")) != NULL)
-          {
-          MXMLFromString(&EP, dataptr, &Tail, Emsg, sizeof(Emsg));
-          copy_to_end_of_dynamic_string(gpu_status, "gpu_fan_speed=");
-          append_dynamic_string(gpu_status, EP->Val);
-          MXMLDestroyE(&EP);
-          }
-        else
-          {
-          dataptr = savptr;
-          }
-        
-        savptr = dataptr;
-        if ((dataptr = strstr(dataptr, "<gpu_util>")) != NULL)
-          {
-          MXMLFromString(&EP, dataptr, &Tail, Emsg, sizeof(Emsg));
-          copy_to_end_of_dynamic_string(gpu_status, "gpu_utilization=");
-          append_dynamic_string(gpu_status, EP->Val);
-          MXMLDestroyE(&EP);
-          }
-        else
-          {
-          dataptr = savptr;
-          }
-        
-        if ((dataptr = strstr(dataptr, "<memory_util>")) != NULL)
-          {
-          MXMLFromString(&EP, dataptr, &Tail, Emsg, sizeof(Emsg));
-          copy_to_end_of_dynamic_string(gpu_status, "gpu_memory_utilization=");
-          append_dynamic_string(gpu_status, EP->Val);
-          MXMLDestroyE(&EP);
-          }
-        else
-          {
-          dataptr = savptr;
-          }
-        
-        if ((dataptr = strstr(dataptr, "<aggregate_ecc_errors>")) != NULL)
-          {
-          if ((tmpptr1 = strstr(dataptr, "<single_bit>")) != NULL)
-            {
-            tmpptr1 = strstr(tmpptr1, "<total>");
-            MXMLFromString(&EP, tmpptr1, &Tail, Emsg, sizeof(Emsg));
-            copy_to_end_of_dynamic_string(gpu_status, "gpu_single_bit_ecc_errors=");
-            append_dynamic_string(gpu_status, EP->Val);
-            MXMLDestroyE(&EP);
-            }
-          
-          if ((tmpptr1 = strstr(dataptr, "<double_bit>")) != NULL)
-            {
-            tmpptr1 = strstr(tmpptr1, "<total>");
-            MXMLFromString(&EP, tmpptr1, &Tail, Emsg, sizeof(Emsg));
-            copy_to_end_of_dynamic_string(gpu_status, "gpu_double_bit_ecc_errors=");
-            append_dynamic_string(gpu_status, EP->Val);
-            MXMLDestroyE(&EP);
-            }
-          }
-        else
-          {
-          dataptr = savptr;
-          }
-        
-        } /* end (MOMNvidiaDriverVersion == 260) */
-      
-      else if (MOMNvidiaDriverVersion >= 270)
-        {
-        savptr = dataptr;
-        if ((dataptr = strstr(dataptr, "<product_name>")) != NULL)
-          {
-          MXMLFromString(&EP, dataptr, &Tail, Emsg, sizeof(Emsg));
-          copy_to_end_of_dynamic_string(gpu_status, "gpu_product_name=");
-          append_dynamic_string(gpu_status, EP->Val);
-          MXMLDestroyE(&EP);
-          }
-        else
-          {
-          dataptr = savptr;
-          }
-        
-        savptr = dataptr;
-        if ((dataptr = strstr(dataptr, "<display_mode>")) != NULL)
-          {
-          MXMLFromString(&EP, dataptr, &Tail, Emsg, sizeof(Emsg));
-          copy_to_end_of_dynamic_string(gpu_status, "gpu_display=");
-          append_dynamic_string(gpu_status, EP->Val);
-          MXMLDestroyE(&EP);
-          }
-        else
-          {
-          dataptr = savptr;
-          }
-        
-        savptr = dataptr;
-        if ((dataptr = strstr(dataptr, "<pci_device_id>")) != NULL)
-          {
-          MXMLFromString(&EP, dataptr, &Tail, Emsg, sizeof(Emsg));
-          copy_to_end_of_dynamic_string(gpu_status, "gpu_pci_device_id=");
-          append_dynamic_string(gpu_status, EP->Val);
-          MXMLDestroyE(&EP);
-          }
-        else
-          {
-          dataptr = savptr;
-          }
-        
-        savptr = dataptr;
-        if ((dataptr = strstr(dataptr, "<pci_bus_id>")) != NULL)
-          {
-          MXMLFromString(&EP, dataptr, &Tail, Emsg, sizeof(Emsg));
-          copy_to_end_of_dynamic_string(gpu_status, "gpu_pci_location_id=");
-          append_dynamic_string(gpu_status, EP->Val);
-          MXMLDestroyE(&EP);
-          }
-        else
-          {
-          dataptr = savptr;
-          }
-        
-        savptr = dataptr;
-        if ((dataptr = strstr(dataptr, "<fan_speed>")) != NULL)
-          {
-          MXMLFromString(&EP, dataptr, &Tail, Emsg, sizeof(Emsg));
-          copy_to_end_of_dynamic_string(gpu_status, "gpu_fan_speed=");
-          append_dynamic_string(gpu_status, EP->Val);
-          MXMLDestroyE(&EP);
-          }
-        else
-          {
-          dataptr = savptr;
-          }
-        
-        if ((dataptr = strstr(dataptr, "<memory_usage>")) != NULL)
-          {
-          if ((tmpptr1 = strstr(dataptr, "<total>")) != NULL)
-            {
-            MXMLFromString(&EP, tmpptr1, &Tail, Emsg, sizeof(Emsg));
-            copy_to_end_of_dynamic_string(gpu_status, "gpu_memory_total=");
-            append_dynamic_string(gpu_status, EP->Val);
-            MXMLDestroyE(&EP);
-            }
-          
-          if ((tmpptr1 = strstr(dataptr, "<used>")) != NULL)
-            {
-            MXMLFromString(&EP, tmpptr1, &Tail, Emsg, sizeof(Emsg));
-            copy_to_end_of_dynamic_string(gpu_status, "gpu_memory_used=");
-            append_dynamic_string(gpu_status, EP->Val);
-            MXMLDestroyE(&EP);
-            }
-          }
-        else
-          {
-          dataptr = savptr;
-          }
-        
-        savptr = dataptr;
-        if ((dataptr = strstr(dataptr, "<compute_mode>")) != NULL)
-          {
-          MXMLFromString(&EP, dataptr, &Tail, Emsg, sizeof(Emsg));
-          copy_to_end_of_dynamic_string(gpu_status, "gpu_mode=");
-          append_dynamic_string(gpu_status, EP->Val);
-          if (EP->Val[0] == 'D') /* Default */
-            {
-            nvidia_gpu_modes[gpuid] = gpu_normal;
-            }
-          else if (EP->Val[0] == 'P') /* Prohibited */
-            {
-            nvidia_gpu_modes[gpuid] = gpu_prohibited;
-            }
-          else if (EP->Val[10] == 'T') /* Exclusive_Thread */
-            {
-            nvidia_gpu_modes[gpuid] = gpu_exclusive_thread;
-            }
-          else if (EP->Val[10] == 'P') /* Exclusive_Process */
-            {
-            nvidia_gpu_modes[gpuid] = gpu_exclusive_process;
-            }
-          else /* unknown */
-            {
-            nvidia_gpu_modes[gpuid] = -1;
-            }
-          MXMLDestroyE(&EP);
-          }
-        else
-          {
-          dataptr = savptr;
-          }
-        
-        savptr = dataptr;
-        if ((dataptr = strstr(dataptr, "<utilization>")) != NULL)
-          {
-          if ((tmpptr1 = strstr(dataptr, "<gpu_util>")) != NULL)
-            {
-            MXMLFromString(&EP, tmpptr1, &Tail, Emsg, sizeof(Emsg));
-            copy_to_end_of_dynamic_string(gpu_status, "gpu_utilization=");
-            append_dynamic_string(gpu_status, EP->Val);
-            MXMLDestroyE(&EP);
-            }
-          
-          if ((tmpptr1 = strstr(dataptr, "<memory_util>")) != NULL)
-            {
-            MXMLFromString(&EP, tmpptr1, &Tail, Emsg, sizeof(Emsg));
-            copy_to_end_of_dynamic_string(gpu_status, "gpu_memory_utilization=");
-            append_dynamic_string(gpu_status, EP->Val);
-            MXMLDestroyE(&EP);
-            }
-          }
-        else
-          {
-          dataptr = savptr;
-          }
-        
-        if ((dataptr = strstr(dataptr, "<ecc_mode>")) != NULL)
-          {
-          if ((tmpptr1 = strstr(dataptr, "<current_ecc>")) != NULL)
-            {
-            MXMLFromString(&EP, tmpptr1, &Tail, Emsg, sizeof(Emsg));
-            copy_to_end_of_dynamic_string(gpu_status, "gpu_ecc_mode=");
-            append_dynamic_string(gpu_status, EP->Val);
-            MXMLDestroyE(&EP);
-            }
-          }
-        else
-          {
-          dataptr = savptr;
-          }
-        
-        if ((dataptr = strstr(dataptr, "<ecc_errors>")) != NULL)
-          {
-          if ((tmpptr1 = strstr(dataptr, "<aggregate>")) != NULL)
-            {
-            if ((tmpptr2 = strstr(tmpptr1, "<single_bit>")) != NULL)
-              {
-              tmpptr2 = strstr(tmpptr1, "<total>");
-              MXMLFromString(&EP, tmpptr2, &Tail, Emsg, sizeof(Emsg));
-              copy_to_end_of_dynamic_string(gpu_status, "gpu_single_bit_ecc_errors=");
-              append_dynamic_string(gpu_status, EP->Val);
-              MXMLDestroyE(&EP);
-              }
-            
-            if ((tmpptr2 = strstr(tmpptr1, "<double_bit>")) != NULL)
-              {
-              tmpptr2 = strstr(tmpptr1, "<total>");
-              MXMLFromString(&EP, tmpptr2, &Tail, Emsg, sizeof(Emsg));
-              copy_to_end_of_dynamic_string(gpu_status, "gpu_double_bit_ecc_errors=");
-              append_dynamic_string(gpu_status, EP->Val);
-              MXMLDestroyE(&EP);
-              }
-            }
-          }
-        else
-          {
-          dataptr = savptr;
-          }
-        
-        savptr = dataptr;
-        if ((dataptr = strstr(dataptr, "<temperature>")) != NULL)
-          {
-          if ((tmpptr1 = strstr(dataptr, "<gpu_temp>")) != NULL)
-            {
-            MXMLFromString(&EP, tmpptr1, &Tail, Emsg, sizeof(Emsg));
-            copy_to_end_of_dynamic_string(gpu_status, "gpu_temperature=");
-            append_dynamic_string(gpu_status, EP->Val);
-            MXMLDestroyE(&EP);
-            }
-          }
-        else
-          {
-          dataptr = savptr;
-          }
-        
-        } /* end (MOMNvidiaDriverVersion >= 270) */
-      
-      else
-        {
-        /* unknown driver version */
-        if (LOGLEVEL >= 3)
-          {
-          log_err(PBSE_RMSYSTEM, __func__, "Unknown Nvidia driver version");
-          }
-        
-        /* need to advance dataptr so we don't recycle through same gpu */
-        dataptr++;
-        }
-      }
-    
-    }
-
-  return;
-  }
-#endif  /* NVIDIA_GPUS */
-
-
-
-
 int should_request_cluster_addrs()
 
   {
@@ -2798,8 +1027,6 @@ int should_request_cluster_addrs()
 
   return(should);
   } /* END should_request_cluster_addrs() */
-
-
 
 
 /* 
@@ -2991,22 +1218,23 @@ int write_cached_statuses(
  * @param pms pointer to mom_server instance
  */
  
-void mom_server_update_stat(
+int mom_server_update_stat(
  
   mom_server *pms,
   char       *status_strings)
  
   {
-  int            stream;
-  int            ret = -1;
+  int              stream;
+  int              ret = -1;
+  int              rc  = COULD_NOT_CONTACT_SERVER;
   struct tcp_chan *chan = NULL;
 
-  if ((pms->pbs_servername[0] == 0) ||
+  if ((pms->pbs_servername[0] == '\0') ||
       (time_now < (pms->MOMLastSendToServerTime + ServerStatUpdateInterval)))
     {
     /* No server is defined for this slot */
     
-    return;
+    return(NO_SERVER_CONFIGURED);
     }
 
   stream = tcp_connect_sockaddr((struct sockaddr *)&pms->sock_addr, sizeof(pms->sock_addr));
@@ -3035,6 +1263,7 @@ void mom_server_update_stat(
       {
       read_tcp_reply(chan, IS_PROTOCOL, IS_PROTOCOL_VER, IS_STATUS, &ret);
       }
+
     if (chan != NULL)
       DIS_tcp_cleanup(chan);
       
@@ -3075,7 +1304,10 @@ void mom_server_update_stat(
         sprintf(log_buffer, "status update successfully sent to %s", pms->pbs_servername);
         
         log_record(PBSEVENT_SYSTEM, 0, __func__, log_buffer);
+
         }
+        
+      rc = PBSE_NONE;
       
       /* It would be redundant to send state since it is already in status */  
       pms->ReportMomState = 0;
@@ -3094,13 +1326,9 @@ void mom_server_update_stat(
   else
     {
     UpdateFailCount++;
-
-    sprintf(log_buffer,
-      "Cannot get a valid stream to send update to server '%s'",
-      pms->pbs_servername);
-    log_err(-1, __func__, log_buffer);
     }
   
+  return(rc);
   }  /* END mom_server_update_stat() */
 
 
@@ -3237,38 +1465,6 @@ int send_update()
   } /* END send_update() */
 
 
-
-
-int add_gpu_status(
-
-  dynamic_string *mom_status)
-
-  {
-#ifdef NVIDIA_GPUS
-
-  /* if we have no Nvidia gpus or nvidia-smi don't send gpu status */
-  if (!use_nvidia_gpu)
-    return(PBSE_NONE);
-
-  copy_to_end_of_dynamic_string(mom_status, START_GPU_STATUS);
-
-#ifdef NVML_API
-  generate_server_gpustatus_nvml(mom_status);
-#else
-
-  generate_server_gpustatus_smi(mom_status);
-#endif /* NVML_API */
-
-  copy_to_end_of_dynamic_string(mom_status, END_GPU_STATUS);
-#endif /* NVIDIA_GPUS */
-
-  return(PBSE_NONE);
-  } /* END add_gpu_status() */
-
-
-
-
-
 /**
  * mom_server_all_update_stat
  *
@@ -3282,6 +1478,7 @@ void mom_server_all_update_stat(void)
   {
   node_comm_t *nc = NULL;
   int          sindex;
+  int          rc;
 
   time_now = time(NULL);
 
@@ -3310,17 +1507,24 @@ void mom_server_all_update_stat(void)
   for (numa_index = 0; numa_index < num_node_boards; numa_index++)
 #endif /* NUMA_SUPPORT */
     {
+    rc = NO_SERVER_CONFIGURED;
+
     clear_dynamic_string(mom_status);
 
     if (is_reporter_mom == FALSE)
       {
       mom_status->used = generate_server_status(mom_status->str, mom_status->size);
-
+#ifdef NVIDIA_GPU
       add_gpu_status(mom_status);
+#endif /* NVIDIA_GPU */
+
+#ifdef MIC
+      add_mic_status(mom_status);
+#endif /* MIC */
+
       }
     else
       generate_alps_status(mom_status, apbasil_path, apbasil_protocol);
-
  
     if ((nc = update_current_path(mh)) != NULL)
       {
@@ -3345,10 +1549,17 @@ void mom_server_all_update_stat(void)
     
     if (nc == NULL)
       {
-      for (sindex = 0; sindex < PBS_MAXSERVER; sindex++)
+      /* now, once we contact one server we stop attempting to report in */
+      for (sindex = 0; sindex < PBS_MAXSERVER && rc != PBSE_NONE; sindex++)
         {
-        mom_server_update_stat(&mom_servers[sindex], mom_status->str);
+        int tmp_rc = mom_server_update_stat(&mom_servers[sindex], mom_status->str);
+
+        if (tmp_rc != NO_SERVER_CONFIGURED)
+          rc = tmp_rc;
         }
+
+      if (rc == COULD_NOT_CONTACT_SERVER)
+        log_err(-1, __func__, "Could not contact any of the servers to send an update");
       }
     else
       close(nc->stream);
@@ -3492,7 +1703,7 @@ void mom_server_diag(
   if (TMOMRejectConn[0] != '\0')
     {
     MUSNPrintF(BPtr, BSpace, "  WARNING:  invalid attempt to connect from server %s\n",
-               TMOMRejectConn);
+      TMOMRejectConn);
     }
 
   if (pms->MOMLastRecvFromServerTime > 0)
@@ -3674,7 +1885,7 @@ mom_server *mom_server_valid_message_source(
    * message came from.
    */
 
-  if (getpeername(chan->sock,&addr,&len) < 0)
+  if (getpeername(chan->sock,&addr,&len) != 0)
     return(NULL);
  
   ipaddr = ntohl(((struct sockaddr_in *)&addr)->sin_addr.s_addr);  /* Extract IP address of source of the message. */
@@ -3745,8 +1956,6 @@ mom_server *mom_server_valid_message_source(
       snprintf(*err_msg, 240, "bad connect from %s - unauthorized server. Will check if its a valid mom",
         netaddr(((struct sockaddr_in *)&addr)));
       }
-
-    sprintf(TMOMRejectConn, "%s  %s", netaddr(((struct sockaddr_in *)&addr)), "(server not authorized)");
     }
 
   return(NULL);
@@ -3979,6 +2188,7 @@ int read_cluster_addresses(
       {
       /* done */
       free(str);
+      str = NULL;
       break;
       }
     else
@@ -3990,6 +2200,12 @@ int read_cluster_addresses(
 
     free(str);
     } /* END reading input from chan */
+
+  if (str != NULL)
+    {
+    free(str);
+    str = NULL;
+    }
 
   if (rc != DIS_SUCCESS)
     {
@@ -4093,26 +2309,35 @@ void mom_is_request(
   /* check that machine is okay to be a server */
   if ((pms = mom_server_valid_message_source(chan, &err_msg)) == NULL)
     {
-    getpeername(chan->sock, &s_addr, &len);
-    addr = (struct sockaddr_in *)&s_addr;
-    ipaddr = ntohl(addr->sin_addr.s_addr);
-    if (AVL_is_in_tree_no_port_compare(ipaddr,0,okclients) == 0)
+    if (getpeername(chan->sock, &s_addr, &len) == 0)
       {
-      if (err_msg)
+      addr = (struct sockaddr_in *)&s_addr;
+      ipaddr = ntohl(addr->sin_addr.s_addr);
+  
+      if (AVL_is_in_tree_no_port_compare(ipaddr, 0, okclients) == 0)
         {
-        log_ext(-1,"mom_server_valid_message_source",err_msg,LOG_ALERT);
-        free(err_msg);
+        if (err_msg)
+          {
+          log_ext(-1,"mom_server_valid_message_source", err_msg, LOG_ALERT);
+          free(err_msg);
+          }
+        else
+          log_ext(-1, __func__, "Invalid source for IS_REQUEST", LOG_ALERT);
+        
+        sprintf(TMOMRejectConn, "%s  %s", netaddr(((struct sockaddr_in *)&addr)), "(server not authorized)");
+        
+        close_conn(chan->sock, FALSE);
+        chan->sock = -1;
+        return;
         }
-      else
-        log_ext(-1, __func__, "Invalid source for IS_REQUEST", LOG_ALERT);
-      close_conn(chan->sock, FALSE);
-      chan->sock = -1;
-      return;
+    
+      getnameinfo(&s_addr,sizeof(s_addr),hostname,sizeof(hostname),NULL,0,0);
       }
-
-    getnameinfo(&s_addr,sizeof(s_addr),hostname,sizeof(hostname),NULL,0,0);
     }
 
+  if (err_msg)
+    free(err_msg);
+ 
   command = disrsi(chan, &ret);
 
   if (ret != DIS_SUCCESS)
@@ -4520,11 +2745,7 @@ void check_state(
     if (tmpPBSNodeMsgBuf[0] != '\0')
       {
       /* update node msg buffer */
-
-      strncpy(
-        PBSNodeMsgBuf,
-        tmpPBSNodeMsgBuf,
-        sizeof(PBSNodeMsgBuf));
+      snprintf(PBSNodeMsgBuf, sizeof(PBSNodeMsgBuf), "%s", tmpPBSNodeMsgBuf);
 
       PBSNodeMsgBuf[sizeof(PBSNodeMsgBuf) - 1] = '\0';
 
@@ -4872,9 +3093,6 @@ int mom_open_socket_to_jobs_server(
   }  /* END mom_open_socket_to_jobs_server() */
 
 
-
-
-
 /**
  * clear_down_mom_servers
  *
@@ -4934,8 +3152,7 @@ int is_mom_server_down(
  * @see scan_for_exiting
  */
 
-int
-no_mom_servers_down(void)
+int no_mom_servers_down(void)
 
   {
   if (down_svraddrs[0] == 0)

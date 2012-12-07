@@ -20,9 +20,9 @@ int main(int argc, char **argv) /* qchkpt */
 
   char job_id[PBS_MAXCLTJOBID];       /* from the command line */
 
-  char job_id_out[PBS_MAXCLTJOBID];
-  char server_out[MAXSERVERNAME];
-  char rmt_server[MAXSERVERNAME];
+  char job_id_out[PBS_MAXCLTJOBID] = "";
+  char server_out[MAXSERVERNAME] = "";
+  char rmt_server[MAXSERVERNAME] = "";
 
   if (argc == 1)
     {
@@ -38,9 +38,9 @@ int main(int argc, char **argv) /* qchkpt */
     int stat = 0;
     int located = FALSE;
 
-    strcpy(job_id, argv[optind]);
+    snprintf(job_id, sizeof(job_id), "%s", argv[optind]);
 
-    if (get_server(job_id, job_id_out, server_out))
+    if (get_server(job_id, job_id_out, sizeof(job_id_out), server_out, sizeof(server_out)))
       {
       fprintf(stderr, "qchkpt: illegally formed job identifier: %s\n", job_id);
       any_failed = 1;
@@ -55,7 +55,11 @@ cnt:
       {
       any_failed = -1 * connect;
 
-      fprintf(stderr, "qchkpt: cannot connect to server %s (errno=%d)\n",
+      if (server_out[0] != '\0')
+        fprintf(stderr, "qchkpt: cannot connect to server %s (errno=%d)\n",
+              server_out, any_failed);
+      else
+        fprintf(stderr, "qchkpt: cannot connect to server %s (errno=%d)\n",
               pbs_server, any_failed);
       continue;
       }

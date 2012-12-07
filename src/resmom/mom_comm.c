@@ -222,7 +222,6 @@ extern int TMomCheckJobChild(pjobexec_t *, int, int *, int *);
 extern void job_nodes(job *);
 extern void sister_job_nodes( job *pjob, char *radix_hosts, char *radix_ports );
 extern int tlist(tree *, char *, int);
-extern int TTmpDirName(job *, char *);
 extern int TMakeTmpDir(job *, char *);
 extern int exec_job_on_ms(job *pjob);
 
@@ -245,7 +244,6 @@ int get_radix_reply_stream(job *);
 int run_prologue_scripts(job *pjob);
 char *cat_dirs(char *root, char *base);
 char *get_local_script_path(job *pjob, char *base);
-int run_prologue_scripts(job *pjob);
 void *im_demux_thread(void *threadArg);
 void fork_demux(job *pjob);
 
@@ -856,11 +854,11 @@ int send_sisters(
 
   for (i = 0; i < loop_limit && job_radix < pjob->ji_radix; i++)
     {
-    hnodent *np;
-     char *host_addr = NULL;
-     unsigned short af_family;
-     int            local_errno;
-     int            addr_len;
+    hnodent        *np;
+    char           *host_addr = NULL;
+    unsigned short  af_family;
+    int             local_errno;
+    int             addr_len;
 
     if ((using_radix == TRUE) && (pjob->ji_qs.ji_svrflags & JOB_SVFLG_INTERMEDIATE_MOM))
       {
@@ -1068,7 +1066,7 @@ void job_start_error(
   char  *nodename) /* I */
 
   {
-  static char    abortjobid[64];
+  static char    abortjobid[PBS_MAXSVRJOBID + 1];
   static int     abortcount = -1;
 
   pbs_attribute *pattr;
@@ -1107,7 +1105,7 @@ void job_start_error(
     }
   else
     {
-    strcpy(abortjobid, pjob->ji_qs.ji_jobid);
+    snprintf(abortjobid, sizeof(abortjobid), "%s", pjob->ji_qs.ji_jobid);
 
     abortcount = 1;
     }
@@ -1703,11 +1701,11 @@ char *resc_string(
  */
 int contact_sisters(
 
-  job  *pjob,
-  tm_event_t event,
-  int   sister_count,
-  char *radix_hosts,
-  char *radix_ports)
+  job        *pjob,
+  tm_event_t  event,
+  int         sister_count,
+  char       *radix_hosts,
+  char       *radix_ports)
 
   {
   int                index;
@@ -1720,10 +1718,10 @@ int contact_sisters(
   tlist_head         phead;
   pbs_attribute     *pattr;
   
-  char *host_addr = NULL;
-  int addr_len;
-  int local_errno;
-  unsigned short af_family;
+  char              *host_addr = NULL;
+  int                addr_len;
+  int                local_errno;
+  unsigned short     af_family;
 
   /* we have to have a sister count of 2 or more for
      this to work */
@@ -1776,6 +1774,7 @@ int contact_sisters(
   np = &pjob->ji_sisters[0];
   ret = get_hostaddr_hostent_af(&local_errno, np->hn_host, &af_family, &host_addr, &addr_len);
   memmove(&np->sock_addr.sin_addr, host_addr, addr_len);
+  free(host_addr);
   np->sock_addr.sin_port = htons(np->hn_port);
   np->sock_addr.sin_family = af_family;
 
@@ -1841,7 +1840,7 @@ int contact_sisters(
   free_attrlist(&phead);
 
   return(ret);
-  } /*end contact_sisters */
+  } /* END contact_sisters */
 
 
 
@@ -1882,8 +1881,12 @@ void send_im_error(
         rc = DIS_tcp_wflush(local_chan);
 
       close(socket);
+
       if (local_chan != NULL)
+        {
         DIS_tcp_cleanup(local_chan);
+        local_chan = NULL;
+        }
 
       if (rc == DIS_SUCCESS)
         break;
@@ -1961,8 +1964,12 @@ int reply_to_join_job_as_sister(
       ret = DIS_tcp_wflush(local_chan);
 
     close(socket);
+
     if (local_chan != NULL)
+      {
       DIS_tcp_cleanup(local_chan);
+      local_chan = NULL;
+      }
 
     if (ret == DIS_SUCCESS)
       {
@@ -1996,7 +2003,8 @@ int reply_to_join_job_as_sister(
       }
 
     /* FAILURE */
-    if (ret >= 0)
+    if ((ret >= 0) &&
+        (ret <= DIS_INVALID))
       {
       snprintf(log_buffer,sizeof(log_buffer),
         "Couldn't send join job reply for job %s to %s - %s will try later",
@@ -2039,7 +2047,7 @@ int reply_to_join_job_as_sister(
 
 int im_join_job_as_sister(
 
-  struct tcp_chan *chan,
+  struct tcp_chan    *chan,
   char               *jobid,  /* I */
   struct sockaddr_in *addr,
   char               *cookie,  /* I */
@@ -2140,11 +2148,15 @@ int im_join_job_as_sister(
         dis_emsg[ret]);
       
       log_err(-1, __func__, log_buffer);
+
+      if (radix_hosts != NULL)
+        free(radix_hosts);
       
       return(IM_FAILURE);
       }
     
     radix_ports = disrst(chan, &ret);
+
     if (ret != DIS_SUCCESS)
       {
       sprintf(log_buffer, "%s: join_job_radix request to node %d for job %s failed - %s (radix_ports)",
@@ -2154,6 +2166,11 @@ int im_join_job_as_sister(
         dis_emsg[ret]);
       
       log_err(-1, __func__, log_buffer);
+
+      if (radix_ports != NULL)
+        free(radix_ports);
+
+      free(radix_hosts);
       
       return(IM_FAILURE);
       }
@@ -2168,6 +2185,9 @@ int im_join_job_as_sister(
         dis_emsg[ret]);
       
       log_err(-1, __func__, log_buffer);
+
+      free(radix_hosts);
+      free(radix_ports);
       
       return(IM_FAILURE);
       }
@@ -2184,6 +2204,11 @@ int im_join_job_as_sister(
       dis_emsg[ret]);
     
     log_err(-1, __func__, log_buffer);
+   
+    if (radix_hosts != NULL)
+      free(radix_hosts);
+    if (radix_ports != NULL)
+      free(radix_ports);
     
     return(IM_FAILURE);
     }
@@ -2267,6 +2292,12 @@ int im_join_job_as_sister(
     send_im_error(rc,1,pjob,cookie,event,fromtask);
    
     mom_job_purge(pjob);
+
+    if (radix_hosts != NULL)
+      free(radix_hosts);
+
+    if (radix_ports != NULL)
+      free(radix_ports);
       
     return(IM_DONE);
     }
@@ -2298,13 +2329,18 @@ int im_join_job_as_sister(
     send_im_error(PBSE_BADUSER,1,pjob,cookie,event,fromtask);
     
     mom_job_purge(pjob);
+
+    if (radix_hosts != NULL)
+      free(radix_hosts);
+
+    if (radix_ports != NULL)
+      free(radix_ports);
       
     return(IM_DONE);
     }
 
   /* should we make a tmpdir? */
-  
-  if (TTmpDirName(pjob, namebuf))
+  if (TTmpDirName(pjob, namebuf, sizeof(namebuf)))
     {
     if (TMakeTmpDir(pjob, namebuf) != PBSE_NONE)
       {
@@ -2317,6 +2353,12 @@ int im_join_job_as_sister(
       send_im_error(PBSE_BADUSER,1,pjob,cookie,event,fromtask);
       
       mom_job_purge(pjob);
+      
+      if (radix_hosts != NULL)
+        free(radix_hosts);
+
+      if (radix_ports != NULL)
+        free(radix_ports);
         
       return(IM_DONE);
       }
@@ -2347,7 +2389,16 @@ int im_join_job_as_sister(
   ret = run_prologue_scripts(pjob);
   if (ret != PBSE_NONE)
     {
-    send_im_error(ret,1,pjob,cookie,event,fromtask);
+    send_im_error(ret, 1, pjob, cookie, event, fromtask);
+    
+    mom_job_purge(pjob);
+    
+    if (radix_hosts != NULL)
+      free(radix_hosts);
+
+    if (radix_ports != NULL)
+      free(radix_ports);
+
     return(IM_DONE);
     }
   
@@ -2360,6 +2411,12 @@ int im_join_job_as_sister(
     log_err(-1, __func__, "cannot load sp switch table");
     
     mom_job_purge(pjob);
+    
+    if (radix_hosts != NULL)
+      free(radix_hosts);
+
+    if (radix_ports != NULL)
+      free(radix_ports);
       
     return(IM_DONE);
     }
@@ -2390,32 +2447,42 @@ int im_join_job_as_sister(
 
     pjob->ji_im_nodeid = 1; /* this will identify us as an intermediate node later */
 
-    if (allocate_demux_sockets(pjob,INTERMEDIATE_MOM))
+    if (allocate_demux_sockets(pjob, INTERMEDIATE_MOM))
+      {
+      free(radix_hosts);
+      free(radix_ports);
       return(IM_DONE);
+      }
 
     contact_sisters(pjob,event,sister_count,radix_hosts,radix_ports);
     pjob->ji_intermediate_join_event = event;
     job_save(pjob,SAVEJOB_FULL,momport);
+
+    free(radix_ports);
+    free(radix_hosts);
     
     return(IM_DONE);
     }
   else
     {
-    unsigned short af_family;
-    char *host_addr = NULL;
-    int  addr_len;
-    int  local_errno;
+    unsigned short  af_family;
+    char           *host_addr = NULL;
+    int             addr_len;
+    int             local_errno;
 
     /* handle the single contact case */
     if (job_radix == TRUE)
       {
-      sister_job_nodes(pjob,radix_hosts,radix_ports);
+      sister_job_nodes(pjob, radix_hosts, radix_ports);
+      free(radix_ports);
+      radix_ports = NULL;
 
       np = &pjob->ji_sisters[0];
       if (np != NULL)
         {
         ret = get_hostaddr_hostent_af(&local_errno, np->hn_host, &af_family, &host_addr, &addr_len);
         memmove(&np->sock_addr.sin_addr, host_addr, addr_len);
+        free(host_addr);
         np->sock_addr.sin_port = htons(np->hn_port);
         np->sock_addr.sin_family = af_family;
         }
@@ -2446,6 +2513,12 @@ int im_join_job_as_sister(
     else
       ret = IM_FAILURE;
     }
+
+  if (radix_ports != NULL)
+    free(radix_ports);
+
+  if (radix_hosts != NULL)
+    free(radix_hosts);
 
   return(ret);
   } /* END im_join_job_as_sister() */
@@ -2536,7 +2609,7 @@ void im_kill_job_as_sister(
 
 int im_spawn_task(
 
-  struct tcp_chan *chan,
+  struct tcp_chan    *chan,
   char               *cookie,   /* I */
   tm_event_t          event,    /* I */
   struct sockaddr_in *addr,     /* I */
@@ -2549,10 +2622,10 @@ int im_spawn_task(
   int                  num;
   int                  i;
   int                  local_socket;
-  struct tcp_chan *local_chan = NULL;
+  struct tcp_chan     *local_chan = NULL;
   hnodent             *np;
   tm_node_id           nodeid;
-  char                *globid;
+  char                *globid = NULL;
   char                *cp;
   char                *jobid = pjob->ji_qs.ji_jobid;
   char               **argv;
@@ -2579,7 +2652,12 @@ int im_spawn_task(
     }
 
   if (ret != DIS_SUCCESS)
+    {
+    if (globid != NULL)
+      free(globid);
+
     return(IM_FAILURE);
+    }
   
   if (LOGLEVEL >= 3)
     {
@@ -2594,15 +2672,10 @@ int im_spawn_task(
     log_event(PBSEVENT_JOB,PBS_EVENTCLASS_JOB,jobid,log_buffer);
     }
   
-  if (pjob->ji_globid == NULL)
+  if ((pjob->ji_globid[0] == '\0') ||
+      (strcmp(pjob->ji_globid, noglobid) == 0))
     {
-    pjob->ji_globid = globid;
-    }
-  else if (strcmp(pjob->ji_globid, noglobid) == 0)
-    {
-    free(pjob->ji_globid);
-    
-    pjob->ji_globid = globid;
+    snprintf(pjob->ji_globid, sizeof(pjob->ji_globid), "%s", globid);
     }
   else if (strcmp(pjob->ji_globid, globid) != 0)
     {
@@ -2610,9 +2683,10 @@ int im_spawn_task(
           __func__,
           pjob->ji_globid,
           globid))
-
-    free(globid);
     }
+
+  free(globid);
+  globid = NULL;
   
   num = 4;
   
@@ -2685,11 +2759,25 @@ int im_spawn_task(
     
     if (i == num - 1)
       {
-      num *= 2;
-      
-      envp = (char **)realloc(envp, num * sizeof(char **));
-      
-      assert(envp);
+      char **tmp = calloc(num * 2, sizeof(char **));
+
+      if (tmp == NULL)
+        {
+        if (envp != NULL)
+          free(envp);
+
+        arrayfree(argv);
+        free(cp);
+
+        return(ENOMEM);
+        }
+      else
+        {
+        memcpy(tmp, envp, sizeof(char **) * num);
+        free(envp);
+        envp = tmp;
+        num *= 2;
+        }
       }
     
     envp[i] = cp;
@@ -3087,7 +3175,7 @@ int im_obit_task(
         
         if (mc != NULL)
           {
-          if ((ot = calloc(1, sizeof(obit_task_info))) != NULL)
+          if ((ot = calloc(1, sizeof(obit_task_info))) == NULL)
             {
             free(mc);
             }
@@ -3163,7 +3251,7 @@ int im_get_info(
   int              local_socket;
   struct tcp_chan *local_chan = NULL;
   char            *jobid = pjob->ji_qs.ji_jobid;
-  char            *name;
+  char            *name = NULL;
   task            *ptask = NULL;
   hnodent         *np;
   infoent         *ip;
@@ -3179,11 +3267,18 @@ int im_get_info(
     }
   
   if (ret != DIS_SUCCESS)
+    {
+    if (name != NULL)
+      free(name);
+
     return(IM_FAILURE);
+    }
 
   if ((np = find_node(pjob, chan->sock, nodeid)) == NULL)
     {
     send_im_error(PBSE_BADHOST,1,pjob,cookie,event,fromtask);
+
+    free(name);
       
     return(IM_DONE);
     }
@@ -3193,6 +3288,8 @@ int im_get_info(
   if (ptask == NULL)
     {
     send_im_error(PBSE_JOBEXIST,1,pjob,cookie,event,fromtask);
+    
+    free(name);
       
     return(IM_DONE);
     }
@@ -3210,9 +3307,13 @@ int im_get_info(
   if ((ip = task_findinfo(ptask, name)) == NULL)
     {
     send_im_error(PBSE_JOBEXIST,1,pjob,cookie,event,fromtask);
+    
+    free(name);
       
     return(IM_DONE);
     }
+    
+  free(name);
 
   local_socket = get_reply_stream(pjob);
 
@@ -3231,6 +3332,7 @@ int im_get_info(
       DIS_tcp_wflush(local_chan);
 
     close(local_socket);
+
     if (local_chan != NULL)
       DIS_tcp_cleanup(local_chan);
     }
@@ -4001,7 +4103,7 @@ int handle_im_get_info_response(
   tm_event_t       event)      /* I */
 
   {
-  char   *info;
+  char   *info = NULL;
   char   *jobid = pjob->ji_qs.ji_jobid;
   int     ret;
   size_t  len;
@@ -4010,7 +4112,12 @@ int handle_im_get_info_response(
   info = disrcs(chan, &len, &ret);
   
   if (ret != DIS_SUCCESS)
+    {
+    if (info != NULL)
+      free(info);
+
     return(IM_FAILURE);
+    }
 
   if (LOGLEVEL >= 7)
     {
@@ -4053,9 +4160,9 @@ int handle_im_get_info_response(
 int handle_im_get_resc_response(
     
   struct tcp_chan *chan,
-  job        *pjob,       /* I */
-  tm_task_id  event_task, /* I */
-  tm_event_t  event)      /* I */
+  job             *pjob,       /* I */
+  tm_task_id       event_task, /* I */
+  tm_event_t       event)      /* I */
 
   {
   int   ret;
@@ -4063,7 +4170,12 @@ int handle_im_get_resc_response(
   task *ptask;
 
   if (ret != DIS_SUCCESS)
+    {
+    if (info != NULL)
+      free(info);
+
     return(IM_FAILURE);
+    }
          
   if (LOGLEVEL >= 7)
     {
@@ -5798,8 +5910,6 @@ void tm_eof(
             "matching task located, marking interface closed");
           }
 
-        ptask->ti_chan = NULL;
-
         return;
         }
       }
@@ -5927,7 +6037,11 @@ int tm_postinfo(
     }
 
   if (prev_error)
+    {
+    free(name);
+    free(info);
     return(TM_DONE);
+    }
   
   task_saveinfo(ptask, name, info, *len);
   
@@ -6193,7 +6307,7 @@ int tm_spawn_request(
     local_socket = tcp_connect_sockaddr((struct sockaddr *)&phost->sock_addr,sizeof(phost->sock_addr));
 
     if (local_socket < 0)
-      return TM_DONE;
+      return(TM_DONE);
     else if ((local_chan = DIS_tcp_setup(local_socket)) == NULL)
       {
       }
@@ -6798,6 +6912,8 @@ int tm_getinfo_request(
       
       if (*ret == DIS_SUCCESS)
         *ret = diswcs(chan, ip->ie_info, ip->ie_len);
+
+      free(name);
       
       return(TM_DONE);
       }
@@ -6807,6 +6923,8 @@ int tm_getinfo_request(
   
   if (*ret == DIS_SUCCESS)
     *ret = diswsi(chan, TM_ENOTFOUND);
+      
+  free(name);
  
   return(TM_DONE);
   } /* END tm_getinfo_request() */
@@ -6929,7 +7047,7 @@ int tm_resources_request(
 int tm_request(
  
   struct tcp_chan *chan,
-  int version)
+  int              version)
  
   {
   int            command, reply = 0;
@@ -7023,9 +7141,9 @@ int tm_request(
   if ((command == TM_ADOPT_ALTID) || 
       (command == TM_ADOPT_JOBID))
     {
-    pid_t sid;
-    char *id = NULL;
-    int adoptStatus;
+    pid_t  sid;
+    char  *id = NULL;
+    int    adoptStatus;
  
     reply = TRUE;
  
@@ -7059,12 +7177,18 @@ int tm_request(
     /* Let the tm_adopt() call know if it was adopted or
        not. This is synchronous - doesn't use the event stuff.*/
  
-    ret = diswsi(chan, adoptStatus);
+    if ((ret = diswsi(chan, adoptStatus)) == DIS_SUCCESS)
+      ret = DIS_tcp_wflush(chan);
  
     if (ret != DIS_SUCCESS) 
       goto err;
- 
-    goto tm_req_finish;
+
+    svr_conn[chan->sock].cn_stay_open = FALSE;
+  
+    free(jobid);
+    free(cookie);
+
+    return(1);
     }
  
   /* verify the jobid is known and the cookie matches */
@@ -7371,19 +7495,20 @@ tm_req_finish:
       if (ptask->ti_chan != NULL)
         {
         close_conn(ptask->ti_chan->sock, FALSE);
-        DIS_tcp_cleanup(ptask->ti_chan);
         ptask->ti_chan = NULL;
         }
+
+      free(jobid);
+      free(cookie);
+
+      return(-1);
       }
     }
   
-  if (jobid)
-    free(jobid);
+  free(jobid);
+  free(cookie);
   
-  if (cookie)
-    free(cookie);
-  
-  return PBSE_NONE;
+  return(PBSE_NONE);
   
 err:
   
@@ -7397,18 +7522,18 @@ err:
   
   log_err(errno, __func__, log_buffer);
   
-  if (chan != NULL)
-    {
-    ipadd = svr_conn[chan->sock].cn_addr;
-  
-    sprintf(log_buffer, "message refused from port %d addr %ld.%ld.%ld.%ld",
-        svr_conn[chan->sock].cn_port,
-        (ipadd & 0xff000000) >> 24,
-        (ipadd & 0x00ff0000) >> 16,
-        (ipadd & 0x0000ff00) >> 8,
-        (ipadd & 0x000000ff));
-    DIS_tcp_close(chan);
-    }
+  ipadd = svr_conn[chan->sock].cn_addr;
+
+  sprintf(log_buffer, "message refused from port %d addr %ld.%ld.%ld.%ld",
+    svr_conn[chan->sock].cn_port,
+    (ipadd & 0xff000000) >> 24,
+    (ipadd & 0x00ff0000) >> 16,
+    (ipadd & 0x0000ff00) >> 8,
+    (ipadd & 0x000000ff));
+
+  close(chan->sock);
+
+  svr_conn[chan->sock].cn_stay_open = FALSE;
 
   if (jobid)
     free(jobid);
@@ -7550,7 +7675,8 @@ static int adoptSession(
    * going to collide with the ones given to non-adopted tasks.
    */
 
-  ptask = pbs_task_create(pjob, (pjob->ji_taskid - 1) + TM_ADOPTED_TASKID_BASE);
+  if((ptask = pbs_task_create(pjob, (pjob->ji_taskid - 1) + TM_ADOPTED_TASKID_BASE)) == NULL)
+    return TM_ERROR;
 
   pjob->ji_taskid++;
 
@@ -7706,7 +7832,8 @@ char *get_local_script_path(
 	if (base[0] != '/')
 	  {
 	  /* base is not an absolute path. Prepend it with the working directory */
-	  wdir = get_job_envvar(pjob, "PBS_O_WORKDIR");
+	  if((wdir = get_job_envvar(pjob, "PBS_O_WORKDIR")) == NULL)
+	    return NULL;
 	  len = strlen(wdir);
 	  if (wdir[len-1] != '/')
       strcat(wdir, "/");
@@ -7725,7 +7852,7 @@ int get_job_struct(
   job                **pjob, 
   char                *jobid, 
   int                  command, 
-  struct tcp_chan *chan,
+  struct tcp_chan     *chan,
   struct sockaddr_in  *addr,
   tm_node_id           nodeid)
 
@@ -7848,8 +7975,6 @@ int run_prologue_scripts(
 
     log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, pjob->ji_qs.ji_jobid, log_buffer);
 
-    mom_job_purge(pjob);
-
     ret = PBSE_SYSTEM;
     goto done;
     }
@@ -7865,8 +7990,6 @@ int run_prologue_scripts(
       j);
 
     log_event(PBSEVENT_JOB,PBS_EVENTCLASS_JOB,pjob->ji_qs.ji_jobid,log_buffer);
-
-    mom_job_purge(pjob);
 
     ret = PBSE_SYSTEM;
     goto done;
@@ -7991,6 +8114,7 @@ void fork_demux(
     free(routem);
     return;
     }
+
   close(pjob->ji_im_stderr);
 
   routem[im_mom_stdout].r_which = listen_out;
@@ -8025,6 +8149,8 @@ void fork_demux(
       close(pipes[0]);
       }
 
+    free(routem);
+
     return;
     }
 
@@ -8046,7 +8172,9 @@ void fork_demux(
     close(im_mom_stdout);
     close(im_mom_stderr);
 
-    (void)write(pipes[1], "fail", strlen("fail"));
+    if (write(pipes[1], "fail", strlen("fail")) < 0)
+      perror(__func__);
+
     close(pipes[1]);
 
     _exit(5);
@@ -8058,7 +8186,9 @@ void fork_demux(
     close(im_mom_stdout);
     close(im_mom_stderr);
 
-    (void)write(pipes[1], "fail", strlen("fail"));
+    if (write(pipes[1], "fail", strlen("fail")) < 0)
+      perror(__func__);
+
     close(pipes[1]);
 
     _exit(5);
@@ -8083,7 +8213,9 @@ void fork_demux(
     close(im_mom_stdout);
     close(im_mom_stderr);
     
-    (void)write(pipes[1], "fail", strlen("fail"));
+    if (write(pipes[1], "fail", strlen("fail")) < 0)
+      perror(__func__);
+
     close(pipes[1]);
 
     _exit(5);
@@ -8098,13 +8230,17 @@ void fork_demux(
     close(im_mom_stderr);
     close(fd1);
 
-    (void)write(pipes[1], "fail", strlen("fail"));
+    if (write(pipes[1], "fail", strlen("fail")) < 0)
+      perror(__func__);
+
     close(pipes[1]);
 
     _exit(5);
     }
 
-  (void)write(pipes[1], "success", strlen("success"));
+  if (write(pipes[1], "success", strlen("success")) < 0)
+    perror(__func__);
+
   close(pipes[1]);
   
   while (1)
@@ -8266,69 +8402,43 @@ void send_update_soon()
 
 
 
+received_node *get_received_node_entry(
 
-/*
- * reads the status strings sent from another mom
- *
- * @param fds - the stream being read
- * @param version - the protocol version
- * @param hostname - the hostname that is sending to us
- */
-
-int read_status_strings(
-    
-  struct tcp_chan *chan,
-  int   version)  /* I */
+  char *str)
 
   {
-  unsigned short  is_new = FALSE;
-  int             rc;
-  int             index;
-  char           *str;
-  char           *hostname;
-  char           *node_str;
   received_node  *rn;
- 
-  /* was mom_port but storage unnecessary */ 
-  disrsi(chan,&rc);
+  int             index;
+  char           *hostname;
 
-  if (rc == DIS_SUCCESS)
-    {
-    /* was rm_port but no longer needed to be stored */   
-    disrsi(chan,&rc);
+  if (str == NULL)
+    return(NULL);
 
-    if (rc == DIS_SUCCESS)
-      {
-      node_str = disrst(chan,&rc);
-      }
-  
-    hostname = node_str + strlen("node=");
-    }
+  hostname = str + strlen("node=");
 
-  if (rc != DIS_SUCCESS)
-    return(rc);
-  
   /* get the old node for this table if present. If not, create a new one */
-  index = get_value_hash(received_table,hostname);
+  index = get_value_hash(received_table, hostname);
   
   if (index == -1)
     {
+
     rn = calloc(1, sizeof(received_node));
     
     if (rn == NULL)
       {
       log_err(ENOMEM, __func__, "No memory to allocate for status information\n");
-      return(ENOMEM);
+      return(NULL);
       }
     
     /* initialize the received node struct */
     rn->statuses = get_dynamic_string(MAXLINE,NULL);
-    strcpy(rn->hostname,hostname);
+    strcpy(rn->hostname, hostname);
     
     if (rn->statuses == NULL)
       {
       log_err(ENOMEM, __func__, "No memory to allocate for status information\n");
-      return(ENOMEM);
+      free(rn);
+      return(NULL);
       }
     
     rn->hellos_sent = 0;
@@ -8341,8 +8451,18 @@ int read_status_strings(
 
       log_event(PBSEVENT_SYSTEM, PBS_EVENTCLASS_NODE, __func__, log_buffer);
       }
-    
-    is_new = TRUE;
+
+    /* add the new node to the received status list */
+    index = insert_thing(received_statuses, rn);
+
+    if (index == -1)
+      log_err(ENOMEM, __func__, "No memory to resize the received_statuses array...SYSTEM FAILURE\n");
+    else
+      {
+      add_hash(received_table, index, rn->hostname);
+
+      send_update_soon();
+      }
     }
   else
     {
@@ -8360,11 +8480,44 @@ int read_status_strings(
       log_event(PBSEVENT_SYSTEM, PBS_EVENTCLASS_NODE, __func__, log_buffer);
       }
     }
-  
-  /* append the node name string to the front first */
-  copy_to_end_of_dynamic_string(rn->statuses,node_str);
-  
-  free(node_str);
+
+  return(rn);
+  } /* END get_received_node_entry() */
+
+
+
+
+/*
+ * reads the status strings sent from another mom
+ *
+ * @param fds - the stream being read
+ * @param version - the protocol version
+ * @param hostname - the hostname that is sending to us
+ */
+
+int read_status_strings(
+    
+  struct tcp_chan *chan,
+  int              version)  /* I */
+
+  {
+  int             rc;
+  char           *str;
+  received_node  *rn = NULL;
+ 
+  /* was mom_port but storage unnecessary */ 
+  disrsi(chan,&rc);
+
+  if (rc == DIS_SUCCESS)
+    {
+    /* was rm_port but no longer needed to be stored */   
+    disrsi(chan,&rc);
+    }
+
+  if (rc != DIS_SUCCESS)
+    {
+    return(rc);
+    }
   
   /* read each string */
   while (((str = disrst(chan,&rc)) != NULL) &&
@@ -8374,14 +8527,24 @@ int read_status_strings(
     if (!strcmp(str, IS_EOL_MESSAGE))
       {
       free(str);
+      str = NULL;
       break;
       }
 
+    if (!strncmp(str, "node=", strlen("node=")))
+      rn = get_received_node_entry(str);
+
     /* place each string into the buffer */
-    copy_to_end_of_dynamic_string(rn->statuses, str);
+    if(rn != NULL)
+      {
+      copy_to_end_of_dynamic_string(rn->statuses, str);
+      }
 
     free(str);
     }
+
+  if (str != NULL)
+    free(str);
 
   if ((rc == DIS_SUCCESS) ||
       (rc == DIS_EOF))
@@ -8390,22 +8553,7 @@ int read_status_strings(
     write_tcp_reply(chan, IS_PROTOCOL, IS_PROTOCOL_VER, IS_STATUS, PBSE_NONE);
     updates_waiting_to_send++;
   
-    if (is_new == TRUE)
-      {
-      int index = insert_thing(received_statuses, rn);
-      
-      if (index == -1)
-        {
-        log_err(ENOMEM, __func__, "No memory to resize the received_statuses array...SYSTEM FAILURE\n");
-        }
-      else
-        {
-        add_hash(received_table, index, rn->hostname);
-        
-        send_update_soon();
-        }
-      }
-    else if (updates_waiting_to_send >= maxupdatesbeforesending)
+    if (updates_waiting_to_send >= maxupdatesbeforesending)
       {
       if (LOGLEVEL >= 3)
         {
@@ -8418,7 +8566,6 @@ int read_status_strings(
       send_update_soon();
       }
     }
-  
   
   return(PBSE_NONE);
   } /* END read_status_strings() */

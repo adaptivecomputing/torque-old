@@ -8,11 +8,13 @@
 #include "batch_request.h" /* batach_request */
 #include "resource.h"
 
+char *msg_err_noqueue = "Unable to requeue job, queue is not defined";
 char *msg_err_malloc = "malloc failed";
 char *msg_routexceed = "Route queue lifetime exceeded";
 int svr_resc_size = 0;
 int LOGLEVEL = 0;
 resource_def *svr_resc_def;
+pthread_mutex_t *reroute_job_mutex;
 
 int svr_movejob(job *jobp, char *destination, struct batch_request *req)
   {
@@ -50,7 +52,7 @@ int site_alt_router(job *jobp, pbs_queue *qp, long retry_time)
   exit(1);
   }
 
-void append_link(tlist_head *head, list_link *new, void *pobj)
+void append_link(tlist_head *head, list_link *new_link, void *pobj)
   {
   fprintf(stderr, "The call to append_link needs to be mocked!!\n");
   exit(1);
@@ -105,4 +107,9 @@ job *svr_find_job(char *jobid, int get_subjob)
 int unlock_ji_mutex(job *pjob, const char *id, char *msg, int logging)
   {
   return(0);
+  }
+
+pbs_queue *find_queuebyname(char *quename)
+  {
+  return(NULL);
   }

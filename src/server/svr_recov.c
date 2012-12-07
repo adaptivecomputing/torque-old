@@ -409,7 +409,7 @@ int attr_to_str(
           {
           case ATR_TYPE_LONG:
 
-            append_dynamic_string(ds, "\n<");
+            append_dynamic_string(ds, "\t\t<");
             append_dynamic_string(ds, current->rs_defin->rs_name);
             append_dynamic_string(ds, ">");
 
@@ -435,7 +435,7 @@ int attr_to_str(
             if (strlen(current->rs_value.at_val.at_str) == 0)
               break;
 
-            append_dynamic_string(ds, "\n<");
+            append_dynamic_string(ds, "\t\t<");
             append_dynamic_string(ds, current->rs_defin->rs_name);
             append_dynamic_string(ds, ">");
 
@@ -453,7 +453,7 @@ int attr_to_str(
 
           case ATR_TYPE_SIZE:
 
-            append_dynamic_string(ds, "\n<");
+            append_dynamic_string(ds, "\t\t<");
             append_dynamic_string(ds, current->rs_defin->rs_name);
             append_dynamic_string(ds, ">");
 
@@ -470,9 +470,8 @@ int attr_to_str(
           return(rc);
 
         current = (resource *)GET_NEXT(current->rs_link);
+        append_dynamic_string(ds, "\n");
         }
-      append_dynamic_string(ds, "\n");
-
       }
 
       break;
@@ -742,6 +741,7 @@ int svr_recov_xml(
       strerror(errno));
 
     log_err(errno, __func__, log_buf);
+    close(sdb);
 
     return(-1);
     }
@@ -781,6 +781,9 @@ int svr_recov_xml(
   end--;
 
   lock_sv_qs_mutex(server.sv_qs_mutex, __func__);
+
+  server.sv_qs.sv_numjobs = 0; 
+  server.sv_qs.sv_numque = server.sv_qs.sv_jobidnumber = 0;
 
   while (current < end)
     {
@@ -924,6 +927,7 @@ int svr_save_xml(
     sprintf(log_buf, "%s:2", __func__);
     unlock_sv_qs_mutex(server.sv_qs_mutex, log_buf);
     free(tmp_file);
+    close(fds);
     return(rc);
     }
 
@@ -932,6 +936,7 @@ int svr_save_xml(
     sprintf(log_buf, "%s:3", __func__);
     unlock_sv_qs_mutex(server.sv_qs_mutex, log_buf);
     free(tmp_file);
+    close(fds);
     return(rc);
     }
  
@@ -941,6 +946,7 @@ int svr_save_xml(
     {
     sprintf(log_buf, "%s:4", __func__);
     unlock_sv_qs_mutex(server.sv_qs_mutex, log_buf);
+    close(fds);
     free(tmp_file);
     return(rc);
     }

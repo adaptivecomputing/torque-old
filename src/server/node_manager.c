@@ -119,7 +119,6 @@
 #include "utils.h"
 #include "u_tree.h"
 #include "threadpool.h"
-#include "issue_request.h" /* issue_Drequest */
 #include "node_func.h" /* find_nodebyname */
 #include "../lib/Libutils/u_lock_ctl.h" /* lock_node, unlock_node */
 #include "../lib/Libnet/lib_net.h" /* socket_read_flush */
@@ -132,21 +131,17 @@
 #include "alps_constants.h"
 
 #define IS_VALID_STR(STR)  (((STR) != NULL) && ((STR)[0] != '\0'))
-#define SEND_HELLO 11
 
 extern int              LOGLEVEL;
 
-extern int              allow_any_mom;
 
 #if !defined(H_ERRNO_DECLARED) && !defined(_AIX)
 extern int              h_errno;
 #endif
   
-const char              shared[] = "shared";
 
 int                     svr_totnodes = 0; /* total number nodes defined       */
 int                     svr_clnodes  = 0; /* number of cluster nodes     */
-int                     svr_tsnodes  = 0; /* number of time shared nodes     */
 int                     svr_chngNodesfile = 0; /* 1 signals want nodes file update */
 int                     gpu_mode_rqstd = -1;  /* default gpu mode requested */
 #ifdef NVIDIA_GPUS
@@ -155,8 +150,6 @@ int                     gpu_err_reset = FALSE;    /* was a gpu errcount reset re
 /* on server shutdown, (qmgr mods)  */
 
 all_nodes               allnodes;
-
-static int              exclusive;  /* node allocation type */
 
 static int              num_addrnote_tasks = 0; /* number of outstanding send_cluster_addrs tasks */
 pthread_mutex_t        *addrnote_mutex = NULL;
@@ -183,7 +176,6 @@ extern struct server    server;
 extern tlist_head       svr_newnodes;
 extern attribute_def    node_attr_def[];   /* node attributes defs */
 extern int              SvrNodeCt;
-extern hello_container  hellos;
 extern struct all_jobs  alljobs;
 
 extern int              multi_mom;
@@ -200,7 +192,7 @@ extern int              multi_mom;
 int handle_complete_first_time(job *pjob);
 int is_compute_node(char *node_id);
 int hasprop(struct pbsnode *, struct prop *);
-int add_job_to_node(struct pbsnode *,struct pbssubn *,short,job *,int);
+int add_job_to_node(struct pbsnode *,struct pbssubn *,short,job *);
 int node_satisfies_request(struct pbsnode *,char *);
 int reserve_node(struct pbsnode *,short,job *,char *,struct howl **);
 int build_host_list(struct howl **,struct pbssubn *,struct pbsnode *);
@@ -215,12 +207,6 @@ job *get_job_from_jobinfo(struct jobinfo *,struct pbsnode *);
 pthread_mutex_t        *node_state_mutex = NULL;
 
 
-
-typedef struct sync_job_info
-  {
-  char   *input;
-  time_t  timestamp;
-  } sync_job_info;
 
 
 
@@ -295,6 +281,8 @@ struct pbsnode *tfind_addr(
     return(numa);
     }
   } /* END tfind_addr() */
+
+
 
 
 
@@ -391,7 +379,6 @@ void update_node_state(
 #ifdef BROKENVNODECHECKS
 
     if ((np->nd_state & INUSE_JOB) ||
-        (np->nd_state & INUSE_JOBSHARE) ||
         (np->nd_nsn != np->nd_nsnfree))
       {
       int snjcount;   /* total number of jobs assigned to nodes */
@@ -423,7 +410,7 @@ void update_node_state(
 
           snjacount++;
 
-          sp->inuse &= ~(INUSE_JOB | INUSE_JOBSHARE);
+          sp->inuse &= ~INUSE_JOB;
 
           /* look for and remove duplicate job entries in subnode job list */
 
@@ -487,7 +474,7 @@ void update_node_state(
           strcat(log_buf, " - subnode job array is corrupt");
           }
 
-        np->nd_state &= ~(INUSE_JOB | INUSE_JOBSHARE);
+        np->nd_state &= ~INUSE_JOB;
         }
       else
         {
@@ -499,10 +486,6 @@ void update_node_state(
             nsn_free);
 
           np->nd_nsnfree = nsn_free;
-
-          /* what is the exact meaning of JOBSHARE? */
-
-          np->nd_state &= ~INUSE_JOBSHARE;
           }
         else
           {
@@ -584,7 +567,6 @@ void update_node_state(
 
 
 
-
 int check_node_for_job(
 
   struct pbsnode *pnode,
@@ -600,12 +582,9 @@ int check_node_for_job(
     /* for each jobinfo on subnode on node ... */
     for (jp = np->jobs; jp != NULL; jp = jp->next)
       {
-      if (jp->jobid != NULL)
+      if (strcmp(jobid, jp->jobid) == 0)
         {
-        if (strcmp(jobid, jp->jobid) == 0)
-          {
-          return(TRUE);
-          }
+        return(TRUE);
         }
       } /* END for each job on the subnode */
     } /* END for each subnode */
@@ -662,6 +641,7 @@ int is_job_on_node(
 
   return(present);
   }  /* END is_job_on_node() */
+
 
 
 
@@ -746,7 +726,8 @@ int kill_job_on_mom(
       strcpy(preq->rq_ind.rq_signal.rq_signame, "SIGKILL");
       
       unlock_node(pnode, __func__, NULL, 0);
-      rc = issue_Drequest(conn, preq, release_req, 0);
+      rc = issue_Drequest(conn, preq);
+      free_br(preq);
       lock_node(pnode, __func__, NULL, 0);
       }
     }
@@ -921,8 +902,7 @@ void *sync_node_jobs(
   char                 *jobstring_in;
   char                 *joblist;
   char                 *jobidstr;
-  resizable_array      *ms_jobs;
-  int                   rc;
+  /*resizable_array      *ms_jobs;*/
 
   if (vp == NULL)
     return(NULL);
@@ -958,21 +938,21 @@ void *sync_node_jobs(
   joblist = jobstring_in;
   jobidstr = threadsafe_tokenizer(&joblist, " ");
   
-  ms_jobs = initialize_resizable_array(MAX(np->nd_ms_jobs->num, 2));
+  /*ms_jobs = initialize_resizable_array(MAX(np->nd_ms_jobs->num, 2));*/
 
   while ((jobidstr != NULL) && 
          (isdigit(*jobidstr)) != FALSE)
     {
     if (job_should_be_on_node(jobidstr, np) == FALSE)
       {
-      rc = kill_job_on_mom(jobidstr, np);
+      kill_job_on_mom(jobidstr, np);
       }
     else
       {
-      char *jobid = remove_thing_memcmp(np->nd_ms_jobs, jobidstr, strlen(jobidstr));
+/*      char *jobid = remove_thing_memcmp(np->nd_ms_jobs, jobidstr, strlen(jobidstr));
 
       if (jobid != NULL)
-        insert_thing(ms_jobs, jobid);
+        insert_thing(ms_jobs, jobid);*/
       }
     
     jobidstr = threadsafe_tokenizer(&joblist, " ");
@@ -982,119 +962,16 @@ void *sync_node_jobs(
   free(raw_input);
 
   /* now check if the mom is reporting any jobs that the server doesn't know about */
-  remove_jobs_that_have_disappeared(np, ms_jobs, sji->timestamp);
+  /*remove_jobs_that_have_disappeared(np, ms_jobs, sji->timestamp);*/
 
   free(sji);
 
-  free_resizable_array(ms_jobs);
+  /*free_resizable_array(ms_jobs);*/
 
   unlock_node(np, __func__, NULL, 0);
 
   return(NULL);
   }  /* END sync_node_jobs() */
-
-
-
-
-/*
- * update_job_data() - update job with values passed through "jobdata"
- *
- * This function is called every time we get a "jobdata" status from the pbs_mom.
- *
- * @see is_stat_get()
- */
-
-void update_job_data(
-
-  struct pbsnode *np,            /* I */
-  char           *jobstring_in)  /* I (changed attributes sent by mom) */
-
-  {
-  char       *jobdata;
-  char       *jobdata_ptr;
-  char       *jobidstr;
-  char       *attr_name;
-  char       *attr_value;
-  char        log_buf[LOCAL_LOG_BUF_SIZE];
-
-  struct job *pjob = NULL;
-  int         on_node = FALSE;
-
-  if ((jobstring_in == NULL) || (!isdigit(*jobstring_in)))
-    {
-    /* NO-OP */
-
-    return;
-    }
-
-  /* FORMAT <JOBID>:<atrtributename=value>,<atrtributename=value>... */
-
-  jobdata = strdup(jobstring_in);
-  jobdata_ptr = jobdata;
-
-  jobidstr = threadsafe_tokenizer(&jobdata_ptr, ":");
-
-  if ((jobidstr != NULL) && isdigit(*jobidstr))
-    {
-    if (strstr(jobidstr, server_name) != NULL)
-      {
-      on_node = is_job_on_node(np, jobidstr);
-      pjob = svr_find_job(jobidstr, TRUE);
-
-      if (pjob != NULL)
-        {
-        int bad;
-
-        svrattrl tA;
-        
-        /* job exists, so get the attributes and update them */
-        attr_name = threadsafe_tokenizer(&jobdata_ptr, "=");
-        
-        while (attr_name != NULL)
-          {
-          attr_value = threadsafe_tokenizer(&jobdata_ptr, ",");
-          
-          if (LOGLEVEL >= 9)
-            {
-            sprintf(log_buf, "Mom sent changed attribute %s value %s for job %s",
-              attr_name,
-              attr_value,
-              pjob->ji_qs.ji_jobid);
-              
-            log_event(PBSEVENT_JOB,PBS_EVENTCLASS_JOB,pjob->ji_qs.ji_jobid,log_buf);  
-            }
-          
-          memset(&tA, 0, sizeof(tA));
-
-          tA.al_name  = attr_name;
-          tA.al_resc  = "";
-          tA.al_value = attr_value;
-          tA.al_op    = SET;
-
-          modify_job_attr(
-            pjob,
-            &tA,                              /* I: ATTR_sched_hint - svrattrl */
-            ATR_DFLAG_MGWR | ATR_DFLAG_SvWR,
-            &bad);
-
-          attr_name = threadsafe_tokenizer(&jobdata_ptr, "=");
-          }
-        
-        unlock_ji_mutex(pjob, __func__, "1", LOGLEVEL);
-        }
-      
-      if (on_node == FALSE)
-        {
-        /* job is reported by mom but server has no record of job */
-        sprintf(log_buf, "stray job %s reported on %s", jobidstr, np->nd_name);
-
-        log_err(-1, __func__, log_buf);
-        }
-      }
-    }
-
-  free(jobdata);
-  }  /* END update_job_data() */
 
 
 
@@ -1126,7 +1003,7 @@ void setup_notification(
       
       if (nnew == NULL)
         {
-        unlock_node(pnode, "setup_notification", "nnew == NULL", LOGLEVEL);
+        unlock_node(pnode, __func__, "nnew == NULL", LOGLEVEL);
         return;
         }
       
@@ -1136,7 +1013,7 @@ void setup_notification(
       
       append_link(&svr_newnodes, &nnew->nn_link, nnew);
       
-      unlock_node(pnode, "setup_notification", "nnew != NULL", LOGLEVEL);
+      unlock_node(pnode, __func__, "nnew != NULL", LOGLEVEL);
       }
     }
 
@@ -1151,334 +1028,11 @@ void setup_notification(
   pthread_mutex_unlock(addrnote_mutex);
 
   return;
-  }
-
-
-/* 
- * reads all of the status information from stream
- * and stores it in a dynamic string
- */
-
-dynamic_string *get_status_info(
-
-    struct tcp_chan *chan)
-
-  {
-  dynamic_string *ds = get_dynamic_string(-1, NULL);
-  char           *ret_info;
-  int             rc;
-
-  if (ds == NULL)
-    return(NULL);
-  
-  while (((ret_info = disrst(chan, &rc)) != NULL) && 
-         (rc == DIS_SUCCESS))
-    {
-    if (!strcmp(ret_info, IS_EOL_MESSAGE))
-      {
-      free(ret_info);
-      break;
-      }
-
-    copy_to_end_of_dynamic_string(ds, ret_info);
-    free(ret_info);
-    }
-
-  /* clear the transmission */
-/*  DIS_tcp_reset(chan,0); */
-
-  return(ds);
-  } /* END get_status_info() */
-
-
-
-/*
- * switches the current node to the desired
- * numa subnode requested in str and unlocks np
- */
-
-struct pbsnode *get_numa_from_str(
-    
-  char           *str, /* I */
-  struct pbsnode *np)  /* I */
-
-  {
-  char           *numa_id;
-  struct pbsnode *numa;
-  unsigned long   numa_index;
-  char            log_buf[LOCAL_LOG_BUF_SIZE];
-  
-  if (np->node_boards == NULL)
-    {
-    /* ERROR */
-    snprintf(log_buf,sizeof(log_buf),
-      "Node %s isn't declared to be NUMA, but mom is reporting\n",
-      np->nd_name);
-    log_err(-1, __func__, log_buf);
-  
-    unlock_node(np, __func__, "np numa update", LOGLEVEL);
-    
-    return(NULL);
-    }
-  
-  numa_id = str + strlen(NUMA_KEYWORD);
-  numa_index = atoi(numa_id);
-  
-  numa = AVL_find(numa_index, np->nd_mom_port, np->node_boards);
-  
-  if (numa == NULL)
-    {
-    /* ERROR */
-    snprintf(log_buf,sizeof(log_buf),
-      "Could not find NUMA index %lu for node %s\n",
-      numa_index,
-      np->nd_name);
-    log_err(-1, __func__, log_buf);
-    
-    unlock_node(np, __func__, "np numa update", LOGLEVEL);
-    
-    return(NULL);
-    }
- 
-  /* SUCCESS */
-  unlock_node(np, __func__, "np numa update", LOGLEVEL);
-  lock_node(numa, __func__, "numa numa update", LOGLEVEL);
-  
-  numa->nd_lastupdate = time(NULL);
-  
-  return(numa);
-  } /* END get_numa_from_str() */
-
-
-
-/* 
- * unlocks np and returns a the node specified in string, locked
- */
-
-struct pbsnode *get_node_from_str(
-
-  char           *str,     /* I */
-  char           *orig_id, /* I */
-  struct pbsnode *np)      /* M */
-
-  {
-  /* this is a node reporting on another node as well */
-  char           *node_id = str + strlen("node=");
-  struct pbsnode *next = NULL;
-  char            log_buf[LOCAL_LOG_BUF_SIZE];
- 
-  /* don't do anything if the name is the same as this node's name */
-  if (strcmp(node_id, np->nd_name))
-    {
-    unlock_node(np, __func__, "np not numa update", LOGLEVEL);
-    
-    next = find_nodebyname(node_id);
-    
-    if (next == NULL)
-      {
-      /* NYI: should we add logic here to attempt the canonical name if this 
-       * is the short name, and attempt the short name if this is the 
-       * canonical name? */
-      
-      /* ERROR */
-      snprintf(log_buf,sizeof(log_buf),
-        "Node %s is reporting on node %s, which pbs_server doesn't know about\n",
-        orig_id,
-        node_id);
-      log_err(-1, __func__, log_buf);
-      }
-    else
-      {
-      if (LOGLEVEL >= 7)
-        {
-        snprintf(log_buf,sizeof(log_buf),
-          "Node %s is reporting for node %s\n",
-          orig_id,
-          node_id);
-        
-        log_event(PBSEVENT_SYSTEM, PBS_EVENTCLASS_SERVER, __func__, log_buf);
-        }
-      
-      next->nd_lastupdate = time(NULL);
-      }
-    }
-  else
-    {
-    next = np;
-    next->nd_lastupdate = time(NULL);
-    }
-
-  /* next may be NULL */
-
-  return(next);
-  } /* END get_node_from_str() */
+  } /* END setup_notification() */
 
 
 
 
-int handle_auto_np(
-
-  struct pbsnode *np,  /* M */
-  char           *str) /* I */
-
-  {
-  pbs_attribute nattr;
-  
-  /* first we decode str into nattr... + 6 is because str has format
-   * ncpus=X, and 6 = strlen(ncpus=) */  
-  if ((node_attr_def + ND_ATR_np)->at_decode(&nattr, ATTR_NODE_np, NULL, str + 6, 0) == 0)
-    {
-    /* ... and if MOM's ncpus is different than our np... */
-    if (nattr.at_val.at_long != np->nd_nsn)
-      {
-      /* ... then we do the defined magic to create new subnodes */
-      (node_attr_def + ND_ATR_np)->at_action(&nattr, (void *)np, ATR_ACTION_ALTER);
-      
-      update_nodes_file(np);
-      }
-    }
-
-  return(PBSE_NONE);
-  } /* END handle_auto_np() */
-
-
-
-
-int process_uname_str(
-
-  struct pbsnode *np,
-  char           *str)
-
-  {
-  /* for any mom mode if an address did not succeed at getnameinfo it was
-   * given the hex value of its ip address */
-  if (!strncmp(np->nd_name, "0x", 2))
-    {
-    char *cp;
-    char  node_name[PBS_MAXHOSTNAME + 1];
-    int   count;
-    
-    cp = strchr(str, ' ');
-    count = 0;
-    
-    do
-      {
-      cp++;
-      node_name[count] = *cp;
-      count++;
-      } while (*cp != ' ' && count < PBS_MAXHOSTNAME);
-    
-    node_name[count-1] = 0;
-    cp = strdup(node_name);
-    free(np->nd_name);
-    np->nd_name = cp;
-    np->nd_first = init_prop(np->nd_name);
-    np->nd_last = np->nd_first;
-    np->nd_f_st = init_prop(np->nd_name);
-    np->nd_l_st = np->nd_f_st;
-    }
-
-  return(PBSE_NONE);
-  } /* END process_uname_str() */
-
-
-
-
-int process_state_str(
-
-  struct pbsnode *np,
-  char           *str)
-
-  {
-  char            log_buf[LOCAL_LOG_BUF_SIZE];
-  struct pbssubn *sp = NULL;
-  int             rc = PBSE_NONE;
-
-  if (!strncmp(str, "state=down", 10))
-    {
-    update_node_state(np, INUSE_DOWN);
-    }
-  else if (!strncmp(str, "state=busy", 10))
-    {
-    update_node_state(np, INUSE_BUSY);
-    }
-  else if (!strncmp(str, "state=free", 10))
-    {
-    update_node_state(np, INUSE_FREE);
-    }
-  else
-    {
-    sprintf(log_buf, "unknown %s from node %s",
-      str,
-      (np->nd_name != NULL) ? np->nd_name : "NULL");
-    
-    log_err(-1, __func__, log_buf);
-    
-    update_node_state(np, INUSE_UNKNOWN);
-    }
-  
-  if (LOGLEVEL >= 9)
-    {
-    sprintf(log_buf, "node '%s' is at state '0x%x'\n",
-      np->nd_name,
-      np->nd_state);
-    
-    log_event(PBSEVENT_ADMIN, PBS_EVENTCLASS_SERVER, __func__, log_buf);
-    }
-  
-  for (sp = np->nd_psn; sp != NULL; sp = sp->next)
-    {
-    if ((!(np->nd_state & INUSE_OFFLINE)) &&
-        (sp->inuse & INUSE_OFFLINE))
-      {
-      /* this doesn't seem to ever happen */
-      if (LOGLEVEL >= 2)
-        {
-        sprintf(log_buf, "sync'ing subnode state '%s' with node state on node %s\n",
-          "offline",
-          np->nd_name);
-        
-        log_event(PBSEVENT_ADMIN, PBS_EVENTCLASS_SERVER, __func__, log_buf);
-        }
-      
-      sp->inuse &= ~INUSE_OFFLINE;
-      }
-    
-    sp->inuse &= ~INUSE_DOWN;
-    }
-
-  return(rc);
-  } /* END process_state_str() */
-
-
-
-int save_node_status(
-
-  struct pbsnode *np,
-  pbs_attribute  *temp)
-
-  {
-  int  rc = PBSE_NONE;
-  char date_attrib[MAXLINE];
-
-  /* it's nice to know when the last update happened */
-  snprintf(date_attrib, sizeof(date_attrib), "rectime=%ld", (long)time(NULL));
-  
-  if (decode_arst(temp, NULL, NULL, date_attrib, 0))
-    {
-    DBPRT(("is_stat_get:  cannot add date_attrib\n"));
-    }
-  
-  /* insert the information from "temp" into np */
-  if ((rc = node_status_list(temp, np, ATR_ACTION_ALTER)) != PBSE_NONE)
-    {
-    DBPRT(("is_stat_get: cannot set node status list\n"));
-    }
-
-  free_arst(temp);
-
-  return(rc);
-  } /* END save_node_status() */
 
 
 
@@ -1528,631 +1082,6 @@ void clear_nvidia_gpus(
 
 
 
-int process_status_info(
-
-  char           *nd_name,
-  dynamic_string *status_info)
-
-  {
-  char           *str;
-  char           *name = nd_name;
-  struct pbsnode *current;
-  long            mom_job_sync = FALSE;
-  long            auto_np = FALSE;
-  long            down_on_error = FALSE;
-  pbs_attribute   temp;
-  int             rc = PBSE_NONE;
-  int             send_hello = FALSE;
-
-  get_svr_attr_l(SRV_ATR_MomJobSync, &mom_job_sync);
-  get_svr_attr_l(SRV_ATR_AutoNodeNP, &auto_np);
-  get_svr_attr_l(SRV_ATR_DownOnError, &down_on_error);
-
-  /* Before filling the "temp" pbs_attribute, initialize it.
-   * The second and third parameter to decode_arst are never
-   * used, so just leave them empty. (GBS) */
-  memset(&temp, 0, sizeof(temp));
-
-  if ((rc = decode_arst(&temp, NULL, NULL, NULL, 0)) != PBSE_NONE)
-    {
-    log_record(PBSEVENT_DEBUG, PBS_EVENTCLASS_NODE, __func__, "cannot initialize attribute");
-    return(rc);
-    }
-
-  /* if original node cannot be found do not process the update */
-  if ((current = find_nodebyname(nd_name)) == NULL)
-    return(PBSE_NONE);
-
-  /* loop over each string */
-  for (str = status_info->str; str != NULL && *str; str += strlen(str) + 1)
-    {
-    /* these two options are for switching nodes */
-    if (!strncmp(str, NUMA_KEYWORD, strlen(NUMA_KEYWORD)))
-      {
-      /* if we've already processed some, save this before moving on */
-      if (str != status_info->str)
-        save_node_status(current, &temp);
-
-      if ((current = get_numa_from_str(str, current)) == NULL)
-        break;
-      else
-        continue;
-      }
-    else if (!strncmp(str, "node=", strlen("node=")))
-      {
-      /* if we've already processed some, save this before moving on */
-      if (str != status_info->str)
-        save_node_status(current, &temp);
-
-      if ((current = get_node_from_str(str, name, current)) == NULL)
-        break;
-      else
-        continue;
-      }
-
-    /* add the info to the "temp" pbs_attribute */
-#ifdef NVIDIA_GPUS
-    else if (!strcmp(str, START_GPU_STATUS))
-      {
-      is_gpustat_get(current, &str);
-      }
-#endif
-    else if (!strcmp(str, "first_update=true"))
-      {
-      /* mom is requesting that we send the mom hierarchy file to her */
-      remove_hello(&hellos, current->nd_name);
-      send_hello = TRUE;
-#ifdef NVIDIA_GPUS
-      /* reset gpu data in case mom reconnects with changed gpus */
-      clear_nvidia_gpus(current);
-#endif  /* NVIDIA_GPUS */
-      }
-    else if ((rc = decode_arst(&temp, NULL, NULL, str, 0)) != PBSE_NONE)
-      {
-      DBPRT(("is_stat_get: cannot add attributes\n"));
-
-      free_arst(&temp);
-
-      break;
-      }
-
-    if (!strncmp(str, "state", 5))
-      {
-      process_state_str(current, str);
-      }
-    else if ((allow_any_mom == TRUE) &&
-             (!strncmp(str, "uname", 5))) 
-      {
-      process_uname_str(current, str);
-      }
-    else if (!strncmp(str, "me", 2))  /* shorter str compare than "message" */
-      {
-      if ((!strncmp(str, "message=ERROR", 13)) &&
-          (down_on_error == TRUE))
-        update_node_state(current, INUSE_DOWN);
-      }
-    else if ((mom_job_sync == TRUE) &&
-             (!strncmp(str, "jobdata=", 8)))
-      {
-      /* update job attributes based on what the MOM gives us */      
-      update_job_data(current, str + strlen("jobdata="));
-      }
-    else if ((mom_job_sync == TRUE) &&
-             (!strncmp(str, "jobs=", 5)))
-      {
-      /* walk job list reported by mom */
-      size_t         len = strlen(str) + strlen(current->nd_name) + 2;
-      char          *jobstr = calloc(1, len);
-      sync_job_info *sji = calloc(1, sizeof(sync_job_info));
-
-      if (jobstr != NULL)
-        {
-        sprintf(jobstr, "%s:%s", current->nd_name, str+5);
-        sji->input = jobstr;
-        sji->timestamp = time(NULL);
-        /* jobstr must be freed in sync_node_jobs */
-        enqueue_threadpool_request(sync_node_jobs, sji);
-        }
-      }
-    else if (auto_np)
-      {
-      if (!(strncmp(str, "ncpus=", 6)))
-        {
-        handle_auto_np(current, str);
-        }
-      }
-    } /* END processing strings */
-
-  if (current != NULL)
-    {
-    save_node_status(current, &temp);
-    unlock_node(current, __func__, NULL, 0);
-    }
-  
-  if ((rc == PBSE_NONE) &&
-      (send_hello == TRUE))
-    rc = SEND_HELLO;
-    
-  return(rc);
-  } /* END process_status_info() */
-
-
-
-
-int is_reporter_node(
-
-  char *node_id)
-
-  {
-  struct pbsnode *pnode = find_nodebyname(node_id);
-  int             rc = FALSE;
-
-  if (pnode != NULL)
-    {
-    rc = pnode->nd_is_alps_reporter;
-    unlock_node(pnode, __func__, NULL, 0);
-    }
-
-  return(rc);
-  } /* END is_reporter_node() */
-
-
-
-
-int is_stat_get(
-
-  char            *node_name,
-  struct tcp_chan *chan)
-
-  {
-  int             rc;
-  char            log_buf[LOCAL_LOG_BUF_SIZE];
-  dynamic_string *status_info;
-
-  if (LOGLEVEL >= 3)
-    {
-    sprintf(log_buf, "received status from node %s", node_name);
-    log_record(PBSEVENT_SCHED, PBS_EVENTCLASS_REQUEST, __func__, log_buf);
-    }
-
-  status_info = get_status_info(chan);
- 
-  if (is_reporter_node(node_name))
-    rc = process_alps_status(node_name, status_info);
-  else
-    rc = process_status_info(node_name, status_info);
-
-  free_dynamic_string(status_info);
-
-  return(rc);
-  }  /* END is_stat_get() */
-
-
-
-#ifdef NVIDIA_GPUS
-/*
- * Function to check if there is a job assigned to this gpu
- */
-
-int gpu_has_job(
-
-  struct pbsnode *pnode,
-  int  gpuid)
-
-  {
-  job            *pjob;
-  char           *gpu_str;
-  char           *found_str;
-  /* increased so that really high gpu indexes don't bother us */
-  char            tmp_str[PBS_MAXHOSTNAME + 10];
-  struct pbssubn *np;
-  struct jobinfo *jp;
-
-  /* check each subnode for a job using a gpuid */
-  for (np = pnode->nd_psn;np != NULL;np = np->next)
-    {
-    /* for each jobinfo on subnode on node ... */
-    for (jp = np->jobs;jp != NULL;jp = jp->next)
-      {
-      if (jp->jobid != NULL)
-        {
-        if ((pjob = get_job_from_jobinfo(jp,pnode)) != NULL)
-          {
-          /* Does this job have this gpuid assigned? */
-          if ((pjob->ji_qs.ji_state == JOB_STATE_RUNNING) &&
-              (pjob->ji_wattr[JOB_ATR_exec_gpus].at_flags & ATR_VFLAG_SET) != 0)
-            {
-            gpu_str = pjob->ji_wattr[JOB_ATR_exec_gpus].at_val.at_str;
-            
-            if (gpu_str != NULL)
-              {
-              snprintf(tmp_str, sizeof(tmp_str), "%s-gpu/%d",
-                pnode->nd_name, gpuid);
-              
-              /* look thru the string and see if it has this host and gpuid.
-               * exec_gpus string should be in format of 
-               * <hostname>-gpu/<index>[+<hostname>-gpu/<index>...]
-               */
-              
-              found_str = strstr (gpu_str, tmp_str);
-              if (found_str != NULL)
-                {
-                unlock_ji_mutex(pjob, __func__, "1", LOGLEVEL);
-                return(TRUE);
-                }
-              }
-            }
-          
-          /* done with job, unlock the mutex */
-          unlock_ji_mutex(pjob, __func__, "2", LOGLEVEL);
-          }
-        }
-      } /* END for each job on the subnode */
-    } /* END for each subnode */
-
-  return(FALSE);
-  }
-#endif  /* NVIDIA_GPUS */
-
-
-
-
-#ifdef NVIDIA_GPUS
-char *move_past_gpu_status(
-
-  char *str)
-
-  {
-  while ((str != NULL) &&
-         (str[0] != '\0'))
-    {
-    if (!strcmp(str, END_GPU_STATUS))
-      break;
-
-    str += strlen(str) + 1;
-    }
-
-  return(str);
-  } /* END move_past_gpu_status() */
-#endif
-
-
-
-
-#ifdef NVIDIA_GPUS
-/*
- * Function to process gpu status messages received from the mom
- */
-
-int is_gpustat_get(
-
-  struct pbsnode  *np,      /* I (modified) */
-  char           **str_ptr) /* I (modified) */
-
-  {
-  int            rc;
-  pbs_attribute  temp;
-  char          *gpuid;
-  char          *str = *str_ptr;
-  char           log_buf[LOCAL_LOG_BUF_SIZE];
-  int            gpuidx = -1;
-  char           gpuinfo[2048];
-  int            need_delimiter;
-  int            reportedgpucnt = 0;
-  int            startgpucnt = 0;
-  int            drv_ver;
-
-  if (LOGLEVEL >= 7)
-    {
-    sprintf(log_buf, "received gpu status from node %s",
-      (np != NULL) ? np->nd_name : "NULL");
-
-    log_record(PBSEVENT_SCHED, PBS_EVENTCLASS_REQUEST, __func__, log_buf);
-    }
-
-  /* save current gpu count for node */
-  startgpucnt = np->nd_ngpus;
-
-  /*
-   *  Before filling the "temp" pbs_attribute, initialize it.
-   *  The second and third parameter to decode_arst are never
-   *  used, so just leave them empty. (GBS)
-   */
-
-  memset(&temp, 0, sizeof(temp));
-  memset(gpuinfo, 0, 2048);
-
-  rc = DIS_SUCCESS;
-
-  if (decode_arst(&temp, NULL, NULL, NULL, 0))
-    {
-    DBPRT(("is_gpustat_get:  cannot initialize attribute\n"));
-
-    return(DIS_NOCOMMIT);
-    }
-
-  str += strlen(str) + 1;
-
-  for (; str != NULL && *str; str += strlen(str) + 1)
-    {
-    /* add the info to the "temp" attribute */
-
-    /* get timestamp */
-    if (!strncmp(str, "timestamp=", 10))
-      {
-      if (decode_arst(&temp, NULL, NULL, str, 0))
-        {
-        DBPRT(("is_gpustat_get: cannot add attributes\n"));
-
-        free_arst(&temp);
-        *str_ptr = move_past_gpu_status(str);
-
-        return(DIS_NOCOMMIT);
-        }
-      continue;
-      }
-
-    /* get driver version, if there is one */
-    if (!strncmp(str, "driver_ver=", 11))
-      {
-      if (decode_arst(&temp, NULL, NULL, str, 0))
-        {
-        DBPRT(("is_gpustat_get: cannot add attributes\n"));
-
-        free_arst(&temp);
-        *str_ptr = move_past_gpu_status(str);
-
-        return(DIS_NOCOMMIT);
-        }
-      drv_ver = atoi(str + 11);
-      continue;
-      }
-    else if (!strcmp(str, END_GPU_STATUS))
-      {
-      break;
-      }
-
-    /* gpuid must come before the rest or we will be in trouble */
-
-    if (!strncmp(str, "gpuid=", 6))
-      {
-      if (strlen(gpuinfo) > 0)
-        {
-        if (decode_arst(&temp, NULL, NULL, gpuinfo, 0))
-          {
-          DBPRT(("is_gpustat_get: cannot add attributes\n"));
-
-          free_arst(&temp);
-          *str_ptr = move_past_gpu_status(str);
-
-          return(DIS_NOCOMMIT);
-          }
-        memset(gpuinfo, 0, 2048);
-        }
-
-      gpuid = &str[6];
-
-      /*
-       * Get this gpus index, if it does not yet exist then find an empty entry.
-       * We need to allow for the gpu status results being returned in
-       * different orders since the nvidia order may change upon mom's reboot
-       */
-
-      gpuidx = gpu_entry_by_id(np, gpuid, TRUE);
-      if (gpuidx == -1)
-        {
-        /*
-         * Failure - we could not get / create a nd_gpusn entry for this gpu,
-         * log an error message.
-         */
-
-        if (LOGLEVEL >= 3)
-          {
-          sprintf(log_buf,
-            "Failed to get/create entry for gpu %s on node %s\n",
-            gpuid,
-            np->nd_name);
-
-          log_ext(-1, __func__, log_buf, LOG_DEBUG);
-          }
-
-        free_arst(&temp);
-        *str_ptr = move_past_gpu_status(str);
-
-        return(DIS_SUCCESS);
-        }
-
-      sprintf(gpuinfo, "gpu[%d]=gpu_id=%s;", gpuidx, gpuid);
-      need_delimiter = FALSE;
-      reportedgpucnt++;
-      np->nd_gpusn[gpuidx].driver_ver = drv_ver;
-
-      /* mark that this gpu node is not virtual */
-      np->nd_gpus_real = TRUE;
-      
-      /*
-       * if we have not filled in the gpu_id returned by the mom node
-       * then fill it in
-       */
-      if ((gpuidx >= 0) && (np->nd_gpusn[gpuidx].gpuid == NULL))
-        {
-        np->nd_gpusn[gpuidx].gpuid = strdup(gpuid);
-        }      
-
-      }
-    else
-      {
-      if (need_delimiter)
-        {
-        strcat(gpuinfo, ";");
-        }
-      strcat(gpuinfo, str);
-      need_delimiter = TRUE;
-      }
-
-    /* check current gpu mode and determine gpu state */
-    
-    if (!memcmp(str, "gpu_mode=", 9))
-      {
-      if ((!memcmp(str + 9, "Normal", 6)) || (!memcmp(str + 9, "Default", 7)))
-        {
-        np->nd_gpusn[gpuidx].mode = gpu_normal;
-        if (gpu_has_job(np, gpuidx))
-          {
-          np->nd_gpusn[gpuidx].state = gpu_shared;
-          }
-        else
-          {
-          np->nd_gpusn[gpuidx].inuse = 0;
-          np->nd_gpusn[gpuidx].state = gpu_unallocated;
-          }
-        }
-      else if ((!memcmp(str + 9, "Exclusive", 9)) ||
-              (!memcmp(str + 9, "Exclusive_Thread", 16)))
-        {
-        np->nd_gpusn[gpuidx].mode = gpu_exclusive_thread;
-        if (gpu_has_job(np, gpuidx))
-          {
-          np->nd_gpusn[gpuidx].state = gpu_exclusive;
-          }
-        else
-          {
-          np->nd_gpusn[gpuidx].inuse = 0;
-          np->nd_gpusn[gpuidx].state = gpu_unallocated;
-          }
-        }
-      else if (!memcmp(str + 9, "Exclusive_Process", 17))
-        {
-        np->nd_gpusn[gpuidx].mode = gpu_exclusive_process;
-        if (gpu_has_job(np, gpuidx))
-          {
-          np->nd_gpusn[gpuidx].state = gpu_exclusive;
-          }
-        else
-          {
-          np->nd_gpusn[gpuidx].inuse = 0;
-          np->nd_gpusn[gpuidx].state = gpu_unallocated;
-          }
-        }
-      else if (!memcmp(str + 9, "Prohibited", 10))
-        {
-        np->nd_gpusn[gpuidx].mode = gpu_prohibited;
-        np->nd_gpusn[gpuidx].state = gpu_unavailable;
-        }
-      else
-        {
-        /* unknown mode, default to prohibited */
-        np->nd_gpusn[gpuidx].mode = gpu_prohibited;
-        np->nd_gpusn[gpuidx].state = gpu_unavailable;
-        if (LOGLEVEL >= 3)
-          {
-          sprintf(log_buf,
-            "GPU %s has unknown mode on node %s",
-            gpuid,
-            np->nd_name);
-
-          log_ext(-1, __func__, log_buf, LOG_DEBUG);
-          }
-        }
- 
-      /* add gpu_mode so it gets added to the pbs_attribute */
-
-      if (need_delimiter)
-        {
-        strcat(gpuinfo, ";");
-        }
-
-      switch (np->nd_gpusn[gpuidx].state)
-        {
-        case gpu_unallocated:
-          strcat (gpuinfo, "gpu_state=Unallocated");
-          break;
-        case gpu_shared:
-          strcat (gpuinfo, "gpu_state=Shared");
-          break;
-        case gpu_exclusive:
-          strcat (gpuinfo, "gpu_state=Exclusive");
-          break;
-        case gpu_unavailable:
-          strcat (gpuinfo, "gpu_state=Unavailable");
-          break;
-        }
-      }
-
-    } /* end of while disrst */
-
-  if (strlen(gpuinfo) > 0)
-    {
-    if (decode_arst(&temp, NULL, NULL, gpuinfo, 0))
-      {
-      DBPRT(("is_gpustat_get: cannot add attributes\n"));
-      
-      free_arst(&temp);
-      *str_ptr = move_past_gpu_status(str);
-
-      return(DIS_NOCOMMIT);
-      }
-    }
-
-  /* maintain the gpu count, if it has changed we need to update the nodes file */
-
-  if (reportedgpucnt != startgpucnt)
-    {
-    np->nd_ngpus = reportedgpucnt;
-
-    /* update the nodes file */
-    update_nodes_file(np);
-    }
-
-  node_gpustatus_list(&temp, np, ATR_ACTION_ALTER);
-  *str_ptr = move_past_gpu_status(str);
-
-  return(DIS_SUCCESS);
-  }  /* END is_gpustat_get() */
-#endif  /* NVIDIA_GPUS */
-
-
-
-/*
-** Start a standard inter-server message.
-*/
-
-int is_compose(
-
-  struct tcp_chan *chan,  /* I */
-  int command) /* I */
-
-  {
-  int ret;
-
-  ret = diswsi(chan, IS_PROTOCOL);
-
-  if (ret != DIS_SUCCESS)
-    goto done;
-
-  ret = diswsi(chan, IS_PROTOCOL_VER);
-
-  if (ret != DIS_SUCCESS)
-    goto done;
-
-  ret = diswsi(chan, command);
-
-  if (ret != DIS_SUCCESS)
-    goto done;
-
-  return(DIS_SUCCESS);
-
-done:
-
-  DBPRT(("is_compose: send error %s\n",
-         dis_emsg[ret]))
-
-  return(ret);
-  }  /* END is_compose() */
-
-
-
-
 /* EOF on a stream received (either stream or addr must be specified) */
 /* mark node down */
 /* NOTE: pass in stream = -1 if you wish the stream to be optional */
@@ -2196,7 +1125,7 @@ void stream_eof(
   if(conn >= 0)
     {
     unlock_node(np, __func__, "parent", LOGLEVEL);
-    close_conn(conn, FALSE);
+    svr_disconnect(conn);
     return;
     }
 
@@ -2321,309 +1250,6 @@ void check_nodes(
 
 
 
-/* sync w/#define IS_XXX */
-
-const char *PBSServerCmds2[] =
-  {
-  "NULL",
-  "HELLO",
-  "CLUSTER_ADDRS",
-  "UPDATE",
-  "STATUS",
-  "GPU_STATUS",
-  NULL
-  };
-
-
-
-/*************************************************
- * svr_is_request
- *
- * Return: svr_is_request always returns a non-zero value
- *         and it must call close_conn to close the connection
- *         before returning. PBSE_SOCKET_CLOSE is the code
- *         for a successful return. But which ever retun 
- *         code is iused it must terminate the while loop
- *         in start_process_pbs_server_port.
- *************************************************/
-int svr_is_request(
-    
-  struct tcp_chan *chan,
-  int              version)
-
-  {
-  int                 command = 0;
-  int                 ret = DIS_SUCCESS;
-  int                 i;
-  int                 err;
-  char                nodename[PBS_MAXHOSTNAME];
-  int                 perm = ATR_DFLAG_MGRD | ATR_DFLAG_MGWR;
-
-  unsigned long       ipaddr;
-  unsigned short      mom_port;
-  unsigned short      rm_port;
-  unsigned long       tmpaddr;
-
-  struct sockaddr_in *addr = NULL;
-  struct sockaddr     s_addr;
-  unsigned int        len = sizeof(s_addr);
-
-  struct pbsnode     *node = NULL;
-  char               *node_name = NULL;
-
-  char                log_buf[LOCAL_LOG_BUF_SIZE+1];
-
-  command = disrsi(chan, &ret);
-
-  if (ret != DIS_SUCCESS)
-    goto err;
-
-  if (LOGLEVEL >= 4)
-    {
-    snprintf(log_buf, LOCAL_LOG_BUF_SIZE,
-        "message received from sock %d (version %d)",
-        chan->sock,
-        version);
-
-    log_event(PBSEVENT_ADMIN,PBS_EVENTCLASS_SERVER,__func__,log_buf);
-    }
-
-  if (getpeername(chan->sock, &s_addr, &len) != 0)
-    {
-    close_conn(chan->sock, FALSE);
-    log_err(errno,__func__,"Cannot get socket name using getpeername\n");
-    return PBSE_SOCKET_CLOSE;
-    }
-
-  addr = (struct sockaddr_in *)&s_addr;
-
-  if (version != IS_PROTOCOL_VER)
-    {
-    snprintf(log_buf, LOCAL_LOG_BUF_SIZE, "protocol version %d unknown from %s",
-      version,
-      netaddr(addr));
-
-    log_err(-1, __func__, log_buf);
-    close_conn(chan->sock, FALSE);
-    return PBSE_SOCKET_DATA;
-    }
-
-  /* check that machine is known */
-  mom_port = disrsi(chan, &ret);
-  rm_port = disrsi(chan, &ret);
-
-  if (LOGLEVEL >= 3)
-    {
-    snprintf(log_buf, LOCAL_LOG_BUF_SIZE,
-      "message received from addr %s: mom_port %d  - rm_port %d",
-      netaddr(addr),
-      mom_port,
-      rm_port);
-
-    log_event(PBSEVENT_ADMIN,PBS_EVENTCLASS_SERVER,__func__,log_buf);
-    }
-
-  ipaddr = ntohl(addr->sin_addr.s_addr);
-  
-  if ((node = AVL_find(ipaddr, mom_port, ipaddrs)) != NULL)
-    {
-    lock_node(node, __func__, "AVL_find", LOGLEVEL);
-    } /* END if AVL_find != NULL) */
-  else if (allow_any_mom)
-    {
-    char *name = get_cached_nameinfo(addr);
-
-    if (name != NULL)
-      snprintf(nodename, sizeof(nodename), "%s", name);
-    else if (getnameinfo(&s_addr, len, nodename, sizeof(nodename)-1, NULL, 0, 0) != 0)
-      {
-      tmpaddr = ntohl(addr->sin_addr.s_addr);
-      sprintf(nodename, "0x%lX", tmpaddr);
-      }
-    else
-      insert_addr_name_info(nodename, NULL, addr);
-
-    err = create_partial_pbs_node(nodename, ipaddr, perm);
-
-    if (err == PBSE_NONE)
-      {
-      node = AVL_find(ipaddr, 0, ipaddrs);
-       
-      lock_node(node, __func__, "no error", LOGLEVEL);
-      }                                                         
-    }
-    
-  if (node == NULL)
-    {
-    /* node not listed in trusted ipaddrs list */
-    
-    snprintf(log_buf, LOCAL_LOG_BUF_SIZE,
-      "bad attempt to connect from %s (address not trusted - check entry in server_priv/nodes)",
-      netaddr(addr));
-    
-    if (LOGLEVEL >= 2)
-      {
-      log_record(PBSEVENT_SCHED, PBS_EVENTCLASS_REQUEST, __func__, log_buf);
-      }
-    else
-      {
-      log_err(-1, __func__, log_buf);
-      }
-    
-    close_conn(chan->sock, FALSE);
-    return PBSE_SOCKET_CLOSE;
-    }
-
-  if (LOGLEVEL >= 3)
-    {
-    snprintf(log_buf, LOCAL_LOG_BUF_SIZE,
-      "message %s (%d) received from mom on host %s (%s) (sock %d)",
-      PBSServerCmds2[command],
-      command,
-      node->nd_name,
-      netaddr(addr),
-      chan->sock);
-
-    log_event(PBSEVENT_ADMIN,PBS_EVENTCLASS_SERVER,__func__,log_buf);
-    }
-
-  switch (command)
-    {
-    case IS_NULL:  /* a ping from server */
-
-      DBPRT(("%s: IS_NULL\n", __func__))
-
-      break;
-
-    case IS_UPDATE:
-
-      DBPRT(("%s: IS_UPDATE\n", __func__))
-
-      i = disrui(chan, &ret);
-
-      if (ret != DIS_SUCCESS)
-        {
-        if (LOGLEVEL >= 1)
-          {
-          snprintf(log_buf, LOCAL_LOG_BUF_SIZE,
-              "IS_UPDATE error %d on node %s\n", ret, node->nd_name);
-
-          log_err(ret, __func__, log_buf);
-          }
-
-        goto err;
-        }
-
-      DBPRT(("%s: IS_UPDATE %s 0x%x\n", __func__, node->nd_name, i))
-
-      update_node_state(node, i);
-
-      break;
-
-    case IS_STATUS:
-
-      if (LOGLEVEL >= 2)
-        {
-        snprintf(log_buf, LOCAL_LOG_BUF_SIZE,
-            "IS_STATUS received from %s", node->nd_name);
-
-        log_event(PBSEVENT_ADMIN, PBS_EVENTCLASS_SERVER, __func__, log_buf);
-        }
-
-      if ((node_name = strdup(node->nd_name)) == NULL)
-        goto err;
-      unlock_node(node, __func__, "before is_stat_get", LOGLEVEL);
-
-      ret = is_stat_get(node_name, chan);
-/*      socket_read_flush(chan->sock); */
-
-      node = find_nodebyname(node_name);
-
-      if (ret == SEND_HELLO)
-        {
-        struct hello_info *hi = calloc(1, sizeof(struct hello_info));
-        write_tcp_reply(chan, IS_PROTOCOL, IS_PROTOCOL_VER, IS_STATUS, DIS_SUCCESS);
-
-        hi->name = strdup(node_name);
-        enqueue_threadpool_request(send_hierarchy_threadtask, hi);
-        ret = DIS_SUCCESS;
-        }
-      else
-        write_tcp_reply(chan,IS_PROTOCOL,IS_PROTOCOL_VER,IS_STATUS,ret);
-
-      node->nd_stream = -1;
-
-      if (ret != DIS_SUCCESS)
-        {
-        if (LOGLEVEL >= 1)
-          {
-          snprintf(log_buf, LOCAL_LOG_BUF_SIZE,
-              "IS_STATUS error %d on node %s", ret, node_name);
-
-          log_err(ret, __func__, log_buf);
-          }
-        free(node_name);
-
-        goto err;
-        }
-      free(node_name);
-
-      break;
-
-    default:
-
-      snprintf(log_buf, LOCAL_LOG_BUF_SIZE,
-          "unknown command %d sent from %s",
-        command,
-        node->nd_name);
-
-      log_err(-1, __func__, log_buf);
-
-      goto err;
-
-      break;
-    }  /* END switch (command) */
-
-  /* must be closed because mom opens and closes this connection each time */
-  close_conn(chan->sock, FALSE);
-
-  unlock_node(node, __func__, "close", LOGLEVEL);
-  
-  return PBSE_SOCKET_CLOSE;
-
-err:
-
-  /* a DIS write error has occurred */
-
-  if (node != NULL)
-    {
-    if (LOGLEVEL >= 1)
-      {
-      DBPRT(("%s: error processing node %s\n",
-            __func__,
-            node->nd_name))
-      }
-
-    sprintf(log_buf, "%s from %s(%s)",
-      dis_emsg[ret],
-      node->nd_name,
-      netaddr(addr));
-    
-    unlock_node(node, __func__, "err", LOGLEVEL);
-    }
-  else
-    {
-    sprintf(log_buf,"%s occurred when trying to read sock %d",
-      dis_emsg[ret],
-      chan->sock);
-    }
-    
-  log_err(-1, __func__, log_buf);
-    
-  close_conn(chan->sock, FALSE);
-
-  return(PBSE_INTERNAL);
-  } /* END svr_is_request */
 
 
 
@@ -2685,7 +1311,7 @@ void *write_node_state_work(
 
   while ((np = next_host(&allnodes,&iter,NULL)) != NULL)
     {
-    if (!(np->nd_state & INUSE_OFFLINE))
+    if (np->nd_state & INUSE_OFFLINE)
       {
       fprintf(nstatef, fmt, np->nd_name, np->nd_state & savemask);
       }
@@ -2757,7 +1383,8 @@ int write_node_note(void)
   while ((np = next_host(&allnodes, &iter, NULL)) != NULL)
     {
     /* write node name followed by its note string */
-    if (np->nd_note != NULL && np->nd_note != '\0')
+    if ((np->nd_note != NULL) && 
+        (np->nd_note[0] != '\0'))
       {
       fprintf(nin, "%s %s\n", np->nd_name, np->nd_note);
       }
@@ -3002,7 +1629,8 @@ static int gpu_count(
         count++;
         }
       else if ((gn->state == gpu_unallocated) ||
-            ((gn->state == gpu_shared) && (gpu_mode_rqstd == gpu_normal)))
+               ((gn->state == gpu_shared) &&
+                (gpu_mode_rqstd == gpu_normal)))
         {
         count++;;
         }
@@ -3150,7 +1778,7 @@ int can_reshuffle(
       return(FALSE);
 
     if ((skip == SKIP_ANYINUSE) &&
-        (vpreq < (pnode->nd_nsnfree + pnode->nd_nsnshared)) &&
+        (vpreq < pnode->nd_nsnfree) &&
         (gpureq < gpu_count(pnode, TRUE)))
       return(FALSE);
 
@@ -3277,7 +1905,8 @@ int proplist(
   char        **str,
   struct prop **plist,
   int          *node_req,
-  int          *gpu_req)
+  int          *gpu_req,
+  int          *mic_req)
 
   {
   struct prop *pp;
@@ -3322,6 +1951,16 @@ int proplist(
           return(1);
           }
         }
+      else if (strcmp(pname, "mics") == 0)
+        {
+        pequal++;
+
+        if ((number(&pequal, mic_req) != PBSE_NONE) ||
+            (*pequal != '\0'))
+          {
+          return(1);
+          }
+        }
       else if (strcmp(pname, "gpus") == 0)
         {
         pequal++;
@@ -3361,7 +2000,7 @@ int proplist(
       {
       gpu_mode_rqstd = gpu_normal;
       }
-    else if (have_gpus && (!strcasecmp(pname, shared)))
+    else if (have_gpus && (!strcasecmp(pname, "shared")))
       {
       gpu_mode_rqstd = gpu_normal;
       }
@@ -3567,7 +2206,6 @@ int node_is_spec_acceptable(
   struct pbsnode   *pnode,
   single_spec_data *spec,
   char             *ProcBMStr,
-  int               exclusive,
   int              *eligible_nodes)
 
   {
@@ -3576,6 +2214,10 @@ int node_is_spec_acceptable(
 
   int             ppn_req = spec->ppn;
   int             gpu_req = spec->gpu;
+  int             mic_req = spec->mic;
+  int             gpu_free;
+  int             np_free;
+  int             mic_free;
 
 #ifdef GEOMETRY_REQUESTS
   if (IS_VALID_STR(ProcBMStr))
@@ -3612,7 +2254,8 @@ int node_is_spec_acceptable(
     return(FALSE);
 
   if ((hasppn(pnode, ppn_req, SKIP_NONE) == FALSE) ||
-      (gpu_count(pnode, FALSE) < gpu_req))
+      (gpu_count(pnode, FALSE) < gpu_req) ||
+      (pnode->nd_nmics < mic_req))
     return(FALSE);
 
   (*eligible_nodes)++;
@@ -3620,15 +2263,14 @@ int node_is_spec_acceptable(
   if ((pnode->nd_state & (INUSE_OFFLINE | INUSE_DOWN | INUSE_RESERVE | INUSE_JOB)) != 0)
     return(FALSE);
 
-  if (exclusive == TRUE) 
-    {
-    int gpu_free = gpu_count(pnode, TRUE) - pnode->nd_ngpus_to_be_used;
-    int np_free  = pnode->nd_nsnfree - pnode->nd_np_to_be_used;
-
-    if ((ppn_req > np_free) ||
-        (gpu_req > gpu_free))
-      return(FALSE);
-    }
+  gpu_free = gpu_count(pnode, TRUE) - pnode->nd_ngpus_to_be_used;
+  np_free  = pnode->nd_nsnfree - pnode->nd_np_to_be_used;
+  mic_free = pnode->nd_nmics_free - pnode->nd_nmics_to_be_used;
+  
+  if ((ppn_req > np_free) ||
+      (gpu_req > gpu_free) ||
+      (mic_req > mic_free))
+    return(FALSE);
 
   return(TRUE);
   } /* END node_is_spec_acceptable() */
@@ -3673,7 +2315,7 @@ int parse_req_data(
         if (*(all_reqs->req_start[i]) == ':')
           all_reqs->req_start[i]++;
         
-        if (proplist(&(all_reqs->req_start[i]), &(req->prop), &(req->ppn), &(req->gpu)))
+        if (proplist(&(all_reqs->req_start[i]), &(req->prop), &(req->ppn), &(req->gpu), &(req->mic)))
           return(-1);
         }
       }
@@ -3681,7 +2323,7 @@ int parse_req_data(
       {
       if (*(all_reqs->req_start[i]) != '\0')
         {
-        if (proplist(&(all_reqs->req_start[i]), &(req->prop), &(req->ppn), &(req->gpu)))
+        if (proplist(&(all_reqs->req_start[i]), &(req->prop), &(req->ppn), &(req->gpu), &(req->mic)))
           return(-1);
         }
       }
@@ -3724,6 +2366,7 @@ int save_node_for_adding(
     strcpy(naji->node_name, pnode->nd_name);
     naji->ppn_needed = req->ppn;
     naji->gpu_needed = req->gpu;
+    naji->mic_needed = req->mic;
     naji->is_external = is_external_node;
     }
   else
@@ -3740,6 +2383,7 @@ int save_node_for_adding(
     strcpy(to_add->node_name, pnode->nd_name);
     to_add->ppn_needed = req->ppn;
     to_add->gpu_needed = req->gpu;
+    to_add->mic_needed = req->mic;
     to_add->is_external = is_external_node;
 
     /* fix pointers, NOTE: works even if old_next == NULL */
@@ -3836,7 +2480,16 @@ int is_compute_node(
   char           *plus;
 
   if ((colon = strchr(node_id, ':')) != NULL)
-    *colon = '\0';
+    {
+    if ((!strcmp(colon + 1, "external")) ||
+        (!strcmp(colon + 1, alps_reporter_feature)) || 
+        (!strcmp(colon + 1, alps_starter_feature)))
+      {
+      return(rc);
+      }
+    else
+      *colon = '\0';
+    }
   
   if ((plus = strchr(node_id, '+')) != NULL)
     *plus = '\0';
@@ -3874,6 +2527,7 @@ void release_node_allocation(
       {
       pnode->nd_np_to_be_used    -= current->ppn_needed;
       pnode->nd_ngpus_to_be_used -= current->gpu_needed;
+      pnode->nd_nmics_to_be_used -= current->mic_needed;
       unlock_node(pnode, __func__, NULL, LOGLEVEL);
       }
     current = current->next;
@@ -3903,7 +2557,6 @@ int check_for_node_type(
     return(-1);
     }
 
-  lock_node(reporter, __func__, NULL, 0);
 
   for (i = 0; i < all_reqs->num_reqs; i++)
     {
@@ -3915,7 +2568,9 @@ int check_for_node_type(
           (!strcmp(p->name, alps_starter_feature)))
         continue;
 
+      lock_node(reporter, __func__, NULL, 0);
       pnode = find_node_in_allnodes(&(reporter->alps_subnodes), p->name);
+      unlock_node(reporter, __func__, NULL, 0);
 
       if (pnode != NULL)
         {
@@ -3932,9 +2587,7 @@ int check_for_node_type(
         {
         int login = FALSE;
 
-        unlock_node(reporter, __func__, NULL, 0);
         pnode = find_nodebyname(p->name);
-        lock_node(reporter, __func__, NULL, 0);
 
         if (pnode != NULL)
           {
@@ -3960,8 +2613,6 @@ int check_for_node_type(
     if (found_type == TRUE)
       break;
     }
-  
-  unlock_node(reporter, __func__, NULL, 0);
 
   return(found_type);
   } /* END check_for_node_type() */
@@ -3974,7 +2625,7 @@ enum job_types find_job_type(
   complete_spec_data *all_reqs)
 
   {
-  enum job_types jt = JOB_TYPE_login;
+  enum job_types jt = JOB_TYPE_cray;
   
   if (check_for_node_type(all_reqs, ND_TYPE_CRAY) == TRUE)
     {
@@ -4009,6 +2660,7 @@ int add_login_node_if_needed(
   int               rc = PBSE_NONE;
   int               dummy1;
   int               dummy2;
+  int               dummy3;
   struct prop      *prop = NULL;
   single_spec_data  req;
 
@@ -4026,7 +2678,7 @@ int add_login_node_if_needed(
     {
     if (login_prop != NULL)
       {
-      proplist(&login_prop, &prop, &dummy1, &dummy2);
+      proplist(&login_prop, &prop, &dummy1, &dummy2, &dummy3);
       }
 
     if ((login = get_next_login_node(prop)) == NULL)
@@ -4091,34 +2743,37 @@ int node_is_external(
 
 int node_spec(
 
-  char              *spec_param, /* I */
-  int                early,      /* I (boolean) */
-  int                exactmatch, /* I (boolean) - NOT USED */
-  char              *ProcBMStr,  /* I */
-  char              *FailNode,   /* O (optional,minsize=1024) */
-  node_job_add_info *naji,       /* O (optional) */
-  char              *EMsg,       /* O (optional,minsize=1024) */
-  char              *login_prop) /* I (optional) */
+  char               *spec_param, /* I */
+  int                 early,      /* I (boolean) */
+  int                 exactmatch, /* I (boolean) - NOT USED */
+  char               *ProcBMStr,  /* I */
+  char               *FailNode,   /* O (optional,minsize=1024) */
+  node_job_add_info  *naji,       /* O (optional) */
+  char               *EMsg,       /* O (optional,minsize=1024) */
+  char               *login_prop, /* I (optional) */
+  alps_req_data     **ard_array,  /* O (optional) */
+  int                *num_reqs)   /* O (optional) */
 
   {
-  struct pbsnode     *pnode;
-  char                first_node_name[PBS_MAXHOSTNAME + 1];
-  char               *first_name_ptr;
-  node_iterator       iter;
-  char                log_buf[LOCAL_LOG_BUF_SIZE];
+  struct pbsnode      *pnode;
+  char                 first_node_name[PBS_MAXHOSTNAME + 1];
+  char                *first_name_ptr;
+  node_iterator        iter;
+  char                 log_buf[LOCAL_LOG_BUF_SIZE];
 
-  char               *globs;
-  char               *cp;
-  char               *hold;
-  int                 i;
-  int                 num;
-  int                 rc;
-  int                 eligible_nodes = 0;
-  complete_spec_data  all_reqs;
-  char               *spec;
-  char               *plus;
-  long                cray_enabled = FALSE;
-  enum job_types      job_type = JOB_TYPE_normal;
+  char                *globs;
+  char                *cp;
+  char                *hold;
+  int                  i;
+  int                  num;
+  int                  rc;
+  int                  eligible_nodes = 0;
+  complete_spec_data   all_reqs;
+  char                *spec;
+  char                *plus;
+  long                 cray_enabled = FALSE;
+  enum job_types       job_type = JOB_TYPE_normal;
+  int                  num_alps_reqs = 0;
 
   if (EMsg != NULL)
     EMsg[0] = '\0';
@@ -4134,8 +2789,6 @@ int node_spec(
 
     DBPRT(("%s\n", log_buf));
     }
-
-  exclusive = 1; /* by default, nodes (VPs) are requested exclusively */
 
   set_first_node_name(spec_param, first_node_name);
   get_svr_attr_l(SRV_ATR_CrayEnabled, &cray_enabled);
@@ -4170,32 +2823,18 @@ int node_spec(
       {
       *cp++ = '\0';
 
-      if (strcmp(cp, shared) != 0)
-        {
-        hold = mod_spec(spec, cp);
-
-        free(spec);
-
-        spec = hold;
-        }
-      else
-        {
-        exclusive = 0;
-        }
-      }
-
-    if (strcmp(globs, shared) != 0)
-      {
-      hold = mod_spec(spec, globs);
-
+      hold = mod_spec(spec, cp);
+      
       free(spec);
-
+      
       spec = hold;
       }
-    else
-      {
-      exclusive = 0;
-      }
+
+    hold = mod_spec(spec, globs);
+    
+    free(spec);
+    
+    spec = hold;
 
     free(globs);
     }  /* END if ((globs = strchr(spec,'#')) != NULL) */
@@ -4204,8 +2843,14 @@ int node_spec(
   plus = spec;
 
   /* count number of reqs */
-  while ((plus = strchr(plus + 1, '+')) != NULL)
-    all_reqs.num_reqs++;
+  while (*plus != '\0')
+    {
+    if ((*plus == '+') ||
+        (*plus == '|'))
+      all_reqs.num_reqs++;
+
+    plus++;
+    }
 
   /* allocate space in all_reqs */
   all_reqs.reqs      = calloc(all_reqs.num_reqs, sizeof(single_spec_data));
@@ -4214,7 +2859,13 @@ int node_spec(
   if ((all_reqs.reqs == NULL) ||
       (all_reqs.req_start == NULL))
     {
+    if (all_reqs.reqs != NULL)
+      free(all_reqs.reqs);
+    else if (all_reqs.req_start != NULL)
+      free(all_reqs.req_start);
+
     log_err(ENOMEM, __func__, "Cannot allocate memory!");
+    free(spec);
     return(-1);
     }
 
@@ -4224,18 +2875,29 @@ int node_spec(
   all_reqs.req_start[i] = spec;
   i++;
 
-  while ((plus = strchr(plus + 1, '+')) != NULL)
+  while (*plus != '\0')
     {
     /* make the '+' NULL and advance past it */
-    *plus = '\0';
-    plus++;
+    if (*plus == '|')
+      num_alps_reqs++;
 
-    /* advance past "nodes=" */
-    if (!strncmp(plus, "nodes=", strlen("nodes=")))
-      plus += strlen("nodes=");
-
-    all_reqs.req_start[i] = plus;
-    i++;
+    if ((*plus == '|') ||
+        (*plus == '+'))
+      {
+      all_reqs.reqs[i].req_id = num_alps_reqs;
+      
+      *plus = '\0';
+      plus++;
+      
+      /* advance past "nodes=" */
+      if (!strncmp(plus, "nodes=", strlen("nodes=")))
+        plus += strlen("nodes=");
+      
+      all_reqs.req_start[i] = plus;
+      i++;
+      }
+    else
+      plus++;
     }
 
   /* now parse each spec into the data */
@@ -4247,6 +2909,8 @@ int node_spec(
     
     free(all_reqs.reqs);
     free(all_reqs.req_start);
+
+    free(spec);
 
     return(rc);
     }
@@ -4307,8 +2971,23 @@ int node_spec(
           (login_prop != NULL) ? login_prop : "null");
         
         log_err(-1, __func__, log_buf);
+
+        free(spec);
+
         return(-1);
         }
+      }
+
+    if ((num_alps_reqs > 0) &&
+        (ard_array != NULL) &&
+        (job_type == JOB_TYPE_cray))
+      {
+      *ard_array = calloc(num_alps_reqs + 1, sizeof(alps_req_data));
+      
+      for (i = 0; i <= num_alps_reqs; i++)
+        (*ard_array)[i].node_list = get_dynamic_string(-1, NULL);
+
+      *num_reqs = num_alps_reqs + 1;
       }
     }
 
@@ -4325,7 +3004,7 @@ int node_spec(
 
       if (req->nodes > 0)
         {
-        if (node_is_spec_acceptable(pnode, req, ProcBMStr, exclusive, &eligible_nodes) == TRUE)
+        if (node_is_spec_acceptable(pnode, req, ProcBMStr, &eligible_nodes) == TRUE)
           {
           if (naji != NULL)
             {
@@ -4336,6 +3015,19 @@ int node_spec(
               save_node_for_adding(naji, pnode, req, first_node_name, TRUE);
             else
               save_node_for_adding(naji, pnode, req, first_node_name, FALSE);
+
+            if ((num_alps_reqs > 0) &&
+                (ard_array != NULL) &&
+                (*ard_array != NULL))
+              {
+              if ((*ard_array)[req->req_id].node_list->used != 0)
+                append_char_to_dynamic_string((*ard_array)[req->req_id].node_list, ',');
+
+              append_dynamic_string((*ard_array)[req->req_id].node_list, pnode->nd_name);
+
+              if (req->ppn > (*ard_array)[req->req_id].ppn)
+                (*ard_array)[req->req_id].ppn = req->ppn;
+              }
             }
 
           /* decrement needed nodes */
@@ -4398,6 +3090,7 @@ int node_spec(
       {
       snprintf(EMsg, MAXLINE, "%s", log_buf);
       }
+
     if (naji != NULL)
       release_node_allocation(naji);
 
@@ -4581,7 +3274,7 @@ int reserve_node(
     if (ProcBMStr[BMIndex--] != '1')
       continue;
 
-    add_job_to_node(pnode,snp,INUSE_JOB,pjob,exclusive);
+    add_job_to_node(pnode, snp, INUSE_JOB, pjob);
 
     build_host_list(hlistptr,snp,pnode);
     }
@@ -4607,15 +3300,13 @@ int reserve_node(
  * @param nd_psn - the subnode (processor) that the job is running on
  * @param newstate - the state nodes are transitioning to when used
  * @param pjob - the job that is going to be run
- * @param exclusive - TRUE if jobs are given exclusive node use, FALSE otherwise
  */
 int add_job_to_node(
 
   struct pbsnode *pnode,     /* I/O */
   struct pbssubn *snp,       /* I/O */
   short           newstate,  /* I */
-  job            *pjob,      /* I */
-  int             exclusive) /* I */
+  job            *pjob)      /* I */
 
   {
   struct jobinfo *jp;
@@ -4659,9 +3350,6 @@ int add_job_to_node(
     if (snp->inuse == INUSE_FREE)
       {
       snp->inuse = newstate;
-
-      if (!exclusive)
-        pnode->nd_nsnshared++;
       }
     }
 
@@ -4699,6 +3387,48 @@ int add_job_to_gpu_subnode(
   return(PBSE_NONE);
   } /* END add_job_to_gpu_subnode() */
 
+
+
+
+int add_job_to_mic(
+
+  struct pbsnode *pnode,
+  int             index,
+  job            *pjob)
+
+  {
+  int rc = -1;
+
+  if (pnode->nd_micjobs[index].jobid[0] == '\0')
+    {
+    strcpy(pnode->nd_micjobs[index].jobid, pjob->ji_qs.ji_jobid);
+    pnode->nd_nmics_free--;
+    pnode->nd_nmics_to_be_used--;
+    rc = PBSE_NONE;
+    }
+
+  return(rc);
+  } /* END add_job_to_mic() */
+
+
+
+
+int remove_job_from_nodes_mics(
+
+  struct pbsnode *pnode,
+  job            *pjob)
+
+  {
+  short i;
+
+  for (i = 0; i < pnode->nd_nmics; i++)
+    {
+    if (!strcmp(pnode->nd_micjobs[i].jobid, pjob->ji_qs.ji_jobid))
+      pnode->nd_micjobs[i].jobid[0] = '\0';
+    }
+
+  return(PBSE_NONE);
+  } /* END remove_job_from_nodes_mics() */
 
 
 
@@ -4916,6 +3646,78 @@ int place_gpus_in_hostlist(
 
 
 
+
+int add_mic_to_list(
+
+  struct howl    **mic_list,
+  struct pbsnode  *pnode,
+  int              index)
+
+  {
+  struct howl *curr;
+  struct howl *prev;
+  struct howl *hp;
+  char        *name;
+  static char *mic = "mic";
+
+  /* create gpu_name */
+  name = calloc(1, strlen(pnode->nd_name) + strlen(mic) + 2);
+  sprintf(name, "%s-%s", pnode->nd_name, mic);
+
+
+  /* initialize the pointers */
+  curr = (struct howl *)calloc(1, sizeof(struct howl));
+  curr->order = pnode->nd_order;
+  curr->name  = name;
+  curr->index = index;
+  curr->port = pnode->nd_mom_rm_port;
+
+  /* find the proper place in the list */
+  for (prev = NULL, hp = *mic_list; hp != NULL; prev = hp, hp = hp->next)
+    {
+    if (curr->order <= hp->order)
+      break;
+    }  /* END for (prev) */
+
+  /* set the correct pointers in the list */
+  curr->next = hp;
+
+  if (prev == NULL)
+    *mic_list = curr;
+  else
+    prev->next = curr;
+
+  return(PBSE_NONE);
+  } /* END add_mic_to_list() */
+
+
+
+
+int place_mics_in_hostlist(
+
+  struct pbsnode    *pnode,
+  job               *pjob,
+  node_job_add_info *naji,
+  struct howl      **mic_list)
+
+  {
+  int i;
+
+  for (i = 0; i < pnode->nd_nmics && naji->mic_needed > 0; i++)
+    {
+    if (add_job_to_mic(pnode, i, pjob) == PBSE_NONE)
+      {
+      naji->mic_needed--;
+      add_mic_to_list(mic_list, pnode, i);
+      }
+    }
+
+  return(PBSE_NONE);
+  } /* END place_mics_in_hostlist() */
+
+
+
+
 /*
  * checks the subnodes of pnode and places them in the host list
  * as necessary
@@ -4935,21 +3737,11 @@ int place_subnodes_in_hostlist(
   /* place the subnodes (nps) in the hostlist */
   for (snp = pnode->nd_psn; snp && naji->ppn_needed > 0; snp = snp->next)
     {
-    if (exclusive)
-      {
-      if (snp->inuse != INUSE_FREE)
-        continue;
-      }
-    else
-      {
-      if ((snp->inuse != INUSE_FREE) && (snp->inuse != INUSE_JOBSHARE))
-        {
-        continue;
-        }
-      }
+    if (snp->inuse != INUSE_FREE)
+      continue;
     
     /* Mark subnode as being IN USE */
-    add_job_to_node(pnode, snp, newstate, pjob, exclusive);
+    add_job_to_node(pnode, snp, newstate, pjob);
     build_host_list(hlist, snp, pnode);
     naji->ppn_needed--;
     }  /* END for (snp) */
@@ -5009,6 +3801,8 @@ int translate_howl_to_string(
       
       if (EMsg != NULL)
         sprintf(EMsg,"no nodes can be allocated to job");
+
+      free(str);
       
       return(PBSE_RESCUNAV);
       }
@@ -5128,6 +3922,7 @@ int build_hostlist_nodes_req(
   short               newstate, /* I */
   struct howl       **hlist,    /* O */
   struct howl       **gpu_list, /* O */
+  struct howl       **mic_list, /* O */
   node_job_add_info  *naji)     /* I - freed */
 
   {
@@ -5148,10 +3943,12 @@ int build_hostlist_nodes_req(
         /* just remove the marked request from the node */
         pnode->nd_np_to_be_used    -= current->ppn_needed;
         pnode->nd_ngpus_to_be_used -= current->gpu_needed;
+        pnode->nd_nmics_to_be_used -= current->mic_needed;
         }
       else
         {
-        place_gpus_in_hostlist(pnode, pjob, current, gpu_list);      
+        place_gpus_in_hostlist(pnode, pjob, current, gpu_list);
+        place_mics_in_hostlist(pnode, pjob, current, mic_list);
         place_subnodes_in_hostlist(hlist, pjob, newstate, pnode, current);
         
         if (current->is_external == TRUE)
@@ -5160,13 +3957,15 @@ int build_hostlist_nodes_req(
           }
 
         if ((naji->gpu_needed > 0) || 
-            (naji->ppn_needed > 0))
+            (naji->ppn_needed > 0) ||
+            (naji->mic_needed > 0))
           {
           failure = TRUE;
        
           /* remove any remaining things marked on the node */
           pnode->nd_np_to_be_used    -= current->ppn_needed;
           pnode->nd_ngpus_to_be_used -= current->gpu_needed;
+          pnode->nd_nmics_to_be_used -= current->mic_needed;
           }
         }
 
@@ -5242,29 +4041,17 @@ int build_hostlist_procs_req(
       {
       for (snp = pnode->nd_psn;snp && procs_needed > 0;snp = snp->next)
         {
-        if (exclusive)
-          {
-          if (snp->inuse != INUSE_FREE)
-            {
-            continue;
-            }
-          }
-        else
-          {
-          if ((snp->inuse != INUSE_FREE) && (snp->inuse != INUSE_JOBSHARE))
-            {
-            continue;
-            }
-          }
+        if (snp->inuse != INUSE_FREE)
+          continue;
 
         /* Mark subnode as being IN USE */
         pnode->nd_needed++; /* we do this because add_job_to_node will decrement it */
 
         /* We need to set the node to thinking. */
         pnode->nd_flag = thinking;
-        add_job_to_node(pnode,snp,newstate,pjob,exclusive);
+        add_job_to_node(pnode, snp, newstate, pjob);
 
-        build_host_list(hlist,snp,pnode);
+        build_host_list(hlist, snp, pnode);
         procs_needed--;
         } /* END for (snp) */
       } /* END for each node */
@@ -5297,6 +4084,62 @@ int add_to_ms_list(
 
 
 
+void free_alps_req_data_array(
+    
+  alps_req_data *ard_array,
+  int            num_reqs)
+
+  {
+  int i;
+
+  for (i = 0; i < num_reqs; i++)
+    free_dynamic_string(ard_array[i].node_list);
+
+  free(ard_array);
+  } /* END free_alps_req_data_array() */
+
+
+
+
+int add_multi_reqs_to_job(
+    
+  job           *pjob,
+  int            num_reqs,
+  alps_req_data *ard_array)
+
+  {
+  int             i;
+  dynamic_string *attr_str;
+  char            buf[MAXLINE];
+
+  if (ard_array == NULL)
+    return(PBSE_NONE);
+
+  attr_str = ard_array[0].node_list;
+
+  for (i = 0; i < num_reqs; i++)
+    {
+    if (i != 0)
+      {
+      append_char_to_dynamic_string(attr_str, '|');
+      append_dynamic_string(attr_str, ard_array[i].node_list->str);
+      }
+
+    snprintf(buf, sizeof(buf), "*%d", ard_array[i].ppn);
+    append_dynamic_string(attr_str, buf);
+    }
+
+  if (pjob->ji_wattr[JOB_ATR_multi_req_alps].at_val.at_str != NULL)
+    free(pjob->ji_wattr[JOB_ATR_multi_req_alps].at_val.at_str);
+
+  pjob->ji_wattr[JOB_ATR_multi_req_alps].at_val.at_str = strdup(attr_str->str);
+  pjob->ji_wattr[JOB_ATR_multi_req_alps].at_flags |= ATR_VFLAG_SET;
+
+  return(PBSE_NONE);
+  } /* END add_multi_reqs_to_job() */
+
+
+
 
 /*
  * set_nodes() - Call node_spec() to allocate nodes then set them inuse.
@@ -5315,8 +4158,9 @@ int set_nodes(
   char  *EMsg)        /* O (optional,minsize=1024) */
 
   {
-  struct howl       *hlist;
-  struct howl       *gpu_list;
+  struct howl       *hlist = NULL;
+  struct howl       *gpu_list = NULL;
+  struct howl       *mic_list = NULL;
 
   int                i;
   int                rc;
@@ -5325,9 +4169,12 @@ int set_nodes(
 
   char              *login_prop = NULL;
   char              *gpu_str = NULL;
+  char              *mic_str = NULL;
   char               ProcBMStr[MAX_BM];
   char               log_buf[LOCAL_LOG_BUF_SIZE];
   node_job_add_info *naji = NULL;
+  alps_req_data     *ard_array = NULL;
+  int                num_reqs = 0;
   long               cray_enabled = FALSE; 
 
 #ifdef NVIDIA_GPUS
@@ -5360,7 +4207,7 @@ int set_nodes(
     login_prop = pjob->ji_wattr[JOB_ATR_login_prop].at_val.at_str;
 
   /* allocate nodes */
-  if ((i = node_spec(spec, 1, 1, ProcBMStr, FailHost, naji, EMsg, login_prop)) == 0) /* check spec */
+  if ((i = node_spec(spec, 1, 1, ProcBMStr, FailHost, naji, EMsg, login_prop, &ard_array, &num_reqs)) == 0)
     {
     /* no resources located, request failed */
     if (EMsg != NULL)
@@ -5373,27 +4220,31 @@ int set_nodes(
       log_record(PBSEVENT_JOB,PBS_EVENTCLASS_JOB,pjob->ji_qs.ji_jobid,log_buf);
       }
 
+    free_naji(naji);
+    free_alps_req_data_array(ard_array, num_reqs);
+
     return(PBSE_RESCUNAV);
     }
   else if (i < 0)
     {
     /* request failed, corrupt request */
     log_err(PBSE_UNKNODE, __func__, "request failed, corrupt request");
+    free_naji(naji);
+    free_alps_req_data_array(ard_array, num_reqs);
     return(PBSE_UNKNODE);
     }
 
-  hlist = NULL;
-  gpu_list = NULL;
+  newstate = INUSE_JOB;
 
-  newstate = exclusive ? INUSE_JOB : INUSE_JOBSHARE;
-
-  if ((rc = build_hostlist_nodes_req(pjob, EMsg, spec, newstate, &hlist, &gpu_list, naji)) != PBSE_NONE)
+  if ((rc = build_hostlist_nodes_req(pjob, EMsg, spec, newstate, &hlist, &gpu_list, &mic_list, naji)) != PBSE_NONE)
     {
+    free_alps_req_data_array(ard_array, num_reqs);
     return(rc);
     }
 
   if ((rc = build_hostlist_procs_req(pjob, procs, newstate, &hlist)) != PBSE_NONE)
     {
+    free_alps_req_data_array(ard_array, num_reqs);
     return(rc);
     }
 
@@ -5409,18 +4260,21 @@ int set_nodes(
 
     if (EMsg != NULL)
       sprintf(EMsg, "no nodes can be allocated to job");
+    
+    free_alps_req_data_array(ard_array, num_reqs);
 
     return(PBSE_RESCUNAV);
     }  /* END if (hlist == NULL) */
 
   pjob->ji_qs.ji_svrflags |= JOB_SVFLG_HasNodes;  /* indicate has nodes */
 
-  /* add this job to ms's job list */
-  add_to_ms_list(hlist->name, pjob);
+  /* add this job to ms's job list --not used right now, will be debugged later */
+  /*add_to_ms_list(hlist->name, pjob);*/
 
   /* build list of allocated nodes, gpus, and ports */
   if ((rc = translate_howl_to_string(hlist, EMsg, &NCount, rtnlist, rtnportlist, TRUE)) != PBSE_NONE)
     {
+    free_alps_req_data_array(ard_array, num_reqs);
     return(rc);
     }
 
@@ -5446,10 +4300,29 @@ int set_nodes(
       }
     }
 
+  if (mic_list != NULL)
+    {
+    if ((rc = translate_howl_to_string(mic_list, EMsg, &NCount, &mic_str, NULL, FALSE)) != PBSE_NONE)
+      return(rc);
+
+    job_attr_def[JOB_ATR_exec_mics].at_free(
+      &pjob->ji_wattr[JOB_ATR_exec_mics]);
+
+    job_attr_def[JOB_ATR_exec_mics].at_decode(
+      &pjob->ji_wattr[JOB_ATR_exec_mics],
+      NULL,
+      NULL,
+      mic_str,
+      0);
+
+    free(mic_str);
+    }
+
   if (gpu_list != NULL)
     {
     if ((rc = translate_howl_to_string(gpu_list, EMsg, &NCount, &gpu_str, NULL, FALSE)) != PBSE_NONE)
       {
+      free_alps_req_data_array(ard_array, num_reqs);
       return(rc);
       }
 
@@ -5485,7 +4358,6 @@ int set_nodes(
 
         log_ext(-1, __func__, log_buf, LOG_DEBUG);
         }
-/*      job_save(pjob,SAVEJOB_FULL,0); */
       }
 #endif  /* NVIDIA_GPUS */
     }
@@ -5499,6 +4371,9 @@ int set_nodes(
 
     log_record(PBSEVENT_SCHED, PBS_EVENTCLASS_REQUEST, __func__, log_buf);
     }
+
+  add_multi_reqs_to_job(pjob, num_reqs, ard_array);
+  free_alps_req_data_array(ard_array, num_reqs);
 
   /* SUCCESS */
 
@@ -5525,6 +4400,7 @@ int procs_requested(
   int          num_procs = 0;
   int          total_procs = 0;
   int          num_gpus = 0;
+  int          num_mics = 0;
   int          i;
   struct prop *prop = NULL;
   char        *tmp_spec;
@@ -5557,32 +4433,18 @@ int procs_requested(
       {
       *cp++ = '\0';
 
-      if (strcmp(cp, shared) != 0)
-        {
-        hold = mod_spec(spec, cp);
-
-        free(tmp_spec);
-
-        tmp_spec = hold;
-        }
-      else
-        {
-        exclusive = 0;
-        }
-      }
-
-    if (strcmp(globs, shared) != 0)
-      {
-      hold = mod_spec(tmp_spec, globs);
-
+      hold = mod_spec(spec, cp);
+      
       free(tmp_spec);
-
+      
       tmp_spec = hold;
       }
-    else
-      {
-      exclusive = 0;
-      }
+
+    hold = mod_spec(tmp_spec, globs);
+    
+    free(tmp_spec);
+    
+    tmp_spec = hold;
 
     free(globs);
     }  /* END if ((globs = strchr(spec,'#')) != NULL) */
@@ -5593,6 +4455,7 @@ int procs_requested(
     {
     if ((i = number(&str, &num_nodes)) == -1 )
       {
+      free(tmp_spec);
       /* Bad string syntax. Fail */
       return(-1);
       }
@@ -5606,8 +4469,9 @@ int procs_requested(
 
         str++;
 
-        if (proplist(&str, &prop, &num_procs, &num_gpus))
+        if (proplist(&str, &prop, &num_procs, &num_gpus, &num_mics))
           {
+          free(tmp_spec);
           return(-1);
           }
         }
@@ -5616,9 +4480,10 @@ int procs_requested(
       {
       /* no number */
       num_nodes = 1;
-      if (proplist(&str, &prop, &num_procs, &num_gpus))
+      if (proplist(&str, &prop, &num_procs, &num_gpus, &num_mics))
         {
         /* must be a prop list with no number in front */
+        free(tmp_spec);
 
         return(-1);
         }
@@ -5655,7 +4520,7 @@ int node_avail_complex(
   {
   int ret;
 
-  ret = node_spec(spec, 1, 0, NULL, NULL, NULL, NULL, NULL);
+  ret = node_spec(spec, 1, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
 
   *navail = ret;
   *nalloc = 0;
@@ -5671,7 +4536,6 @@ int node_avail_complex(
 
 /*
  * node_avail - report if nodes requested are available
- * Does NOT even consider Time Shared Nodes
  *
  * Return 0 when no error in request and
  *  *navail is set to number available
@@ -5704,6 +4568,7 @@ int node_avail(
   register int    xdown;
   int             node_req = 1;
   int             gpu_req = 0;
+  int             mic_req = 0;
 
   node_iterator   iter;
 
@@ -5731,7 +4596,7 @@ int node_avail(
 
     if (*pc)
       {
-      if (proplist(&pc, &prop, &node_req, &gpu_req))
+      if (proplist(&pc, &prop, &node_req, &gpu_req, &mic_req))
         {
         return(RM_ERR_BADPARAM);
         }
@@ -5802,7 +4667,6 @@ int node_avail(
 
 /*
  * node_reserve - Reserve nodes
- * Cannot reserve Time Shared Nodes
  *
  * Returns: >0 - reservation succeeded, number of nodes reserved
  *    0 - None or partial reservation
@@ -5836,7 +4700,7 @@ int node_reserve(
 
   naji = calloc(1, sizeof(node_job_add_info));
 
-  if ((ret_val = node_spec(nspec, 0, 0, NULL, NULL, naji, NULL, NULL)) >= 0)
+  if ((ret_val = node_spec(nspec, 0, 0, NULL, NULL, naji, NULL, NULL, NULL, NULL)) >= 0)
     {
     /*
     ** Zero or more of the needed Nodes are available to be
@@ -5891,71 +4755,6 @@ int node_reserve(
   return(ret_val);
   }  /* END node_reserve() */
 
-
-
-
-
-
-/*
- * is_ts_node - does the nodestr specify a single time share node?
- * 0 - yes
- * 1 - no, not a ts node or more than one node (name will not match)
- */
-
-int is_ts_node(
-
-  char *nodestr)
-
-  {
-  int             rc = 1; /* see comment above */
-  struct pbsnode *np = find_nodebyname(nodestr);
-
-  if (np != NULL)
-    {
-    if (np->nd_ntype == NTYPE_TIMESHARED)
-      {
-      rc = 0;
-      }
-
-    unlock_node(np, "is_ts_node", NULL, LOGLEVEL);
-    }
-
-  return(rc);
-  }  /* END is_ts_node() */
-
-
-
-
-
-/*
- * find_ts_node - find first up time-shared node
- *
- * returns name of node or null
- */
-
-char *find_ts_node(void)
-
-  {
-  struct pbsnode *np = NULL;
-  node_iterator   iter;
-
-  reinitialize_node_iterator(&iter);
-
-  while ((np = next_node(&allnodes,np,&iter)) != NULL)
-    {
-    if ((np->nd_ntype == NTYPE_TIMESHARED) &&
-        ((np->nd_state & (INUSE_DOWN | INUSE_OFFLINE)) == 0))
-      {
-      char *name = np->nd_name;
-
-      unlock_node(np, "find_ts_node", NULL, LOGLEVEL);
-
-      return(name);
-      }
-    } /* END for each node */
-
-  return(NULL);
-  }  /* END find_ts_node() */
 
 
 
@@ -6124,17 +4923,14 @@ int remove_job_from_node(
         log_record(PBSEVENT_SCHED, PBS_EVENTCLASS_REQUEST, __func__, log_buf);
         }
       
-      pnode->nd_state &= ~(INUSE_JOB | INUSE_JOBSHARE);
+      pnode->nd_state &= ~INUSE_JOB;
       
       /* if no jobs are associated with subnode, mark subnode as free */
       
       if (np->jobs == NULL)
         {
-        if (np->inuse & INUSE_JOBSHARE)
-          pnode->nd_nsnshared--;
-        
         /* adjust node state (turn off job/job-exclusive) */        
-        np->inuse &= ~(INUSE_JOB | INUSE_JOBSHARE);
+        np->inuse &= ~INUSE_JOB;
         }
       
       break;
@@ -6194,6 +4990,7 @@ void free_nodes(
       {
       remove_job_from_node(pnode, pjob);
       remove_job_from_nodes_gpus(pnode, pjob);
+      remove_job_from_nodes_mics(pnode, pjob);
       unlock_node(pnode, __func__, NULL, 0);
       }
     }
@@ -6217,6 +5014,34 @@ void free_nodes(
 
 
 
+struct pbsnode *get_compute_node(
+
+  char *node_name)
+
+  {
+  struct pbsnode *ar = alps_reporter;
+  struct pbsnode *compute_node = NULL;
+  unsigned int    i;
+  unsigned int    len = strlen(node_name);
+
+  for (i = 0; i < len; i++)
+    {
+    if (isdigit(node_name[i]) == FALSE)
+      {
+      /* found a non-numeric character - not a compute node */
+      return(NULL);
+      }
+    }
+
+  lock_node(ar, __func__, NULL, 0);
+  compute_node = create_alps_subnode(ar, node_name);
+  unlock_node(ar, __func__, NULL, 0);
+
+  return(compute_node);
+  } /* END get_compute_node() */
+
+
+
 
 /*
  * set_one_old - set a named node as allocated to a job
@@ -6225,8 +5050,7 @@ void free_nodes(
 void set_one_old(
 
   char *name,
-  job  *pjob,
-  int   is_shared) /* how used flag, either INUSE_JOB or INUSE_JOBSHARE */
+  job  *pjob)
 
   {
   int             index;
@@ -6236,6 +5060,7 @@ void set_one_old(
 
   struct jobinfo *jp;
   char           *pc;
+  long            cray_enabled = FALSE;
 
   if ((pc = strchr(name, (int)'/')))
     {
@@ -6248,7 +5073,26 @@ void set_one_old(
     index = 0;
     }
 
+  get_svr_attr_l(SRV_ATR_CrayEnabled, &cray_enabled);
+
   pnode = find_nodebyname(name);
+
+  if (cray_enabled == TRUE)
+    {
+    if (pnode == NULL)
+      pnode = get_compute_node(name);
+
+    if (pnode != NULL)
+      {
+      if (pnode->parent == alps_reporter)
+        {
+        while (index >= pnode->nd_nsn)
+          {
+          create_subnode(pnode);
+          }
+        }
+      }
+    }
 
   if (pnode != NULL)
     {
@@ -6259,7 +5103,7 @@ void set_one_old(
         {
         if (snp->index == index)
           {
-          snp->inuse = is_shared;
+          snp->inuse = INUSE_JOB;
           
           jp = (struct jobinfo *)calloc(1, sizeof(struct jobinfo));
           
@@ -6274,7 +5118,7 @@ void set_one_old(
             }
           
           if (--pnode->nd_nsnfree <= 0)
-            pnode->nd_state |= is_shared;
+            pnode->nd_state |= INUSE_JOB;
          
           break;
           }
@@ -6303,26 +5147,10 @@ void set_old_nodes(
   {
   char     *old;
   char     *po;
-  resource *presc;
-  int       is_shared = INUSE_JOB;
+  long      cray_enabled = FALSE;
 
   if (pjob->ji_wattr[JOB_ATR_exec_host].at_flags & ATR_VFLAG_SET)
     {
-    /* are the nodes being used shared? Look in "neednodes" */
-
-    presc = find_resc_entry(
-              &pjob->ji_wattr[JOB_ATR_resource],
-              find_resc_def(svr_resc_def, "neednodes", svr_resc_size));
-
-    if ((presc != NULL) && (presc->rs_value.at_flags & ATR_VFLAG_SET))
-      {
-      if ((po = strchr(presc->rs_value.at_val.at_str, '#')))
-        {
-        if (strstr(++po, shared) != NULL)
-          is_shared = INUSE_JOBSHARE;
-        }
-      }
-
     old = strdup(pjob->ji_wattr[JOB_ATR_exec_host].at_val.at_str);
 
     if (old == NULL)
@@ -6336,16 +5164,26 @@ void set_old_nodes(
       {
       *po++ = '\0';
 
-      set_one_old(po, pjob, is_shared);
+      set_one_old(po, pjob);
       }
 
-    set_one_old(old, pjob, is_shared);
+    set_one_old(old, pjob);
 
     free(old);
     }  /* END if pjobs exec host is set */
 
+  /* record the job on the alps_login if cray_enabled */
+  get_svr_attr_l(SRV_ATR_CrayEnabled, &cray_enabled);
+  if ((cray_enabled == TRUE) &&
+      (pjob->ji_wattr[JOB_ATR_login_node_id].at_flags & ATR_VFLAG_SET))
+    {
+    set_one_old(pjob->ji_wattr[JOB_ATR_login_node_id].at_val.at_str, pjob);
+    }
+
   return;
   }  /* END set_old_nodes() */
+
+
 
   
 job *get_job_from_jobinfo(

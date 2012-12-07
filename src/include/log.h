@@ -147,6 +147,11 @@
 
 #define MAXLINE 1024
 
+enum getter_setter { GETV, SETV };
+typedef enum getter_setter SGetter;
+
+extern int LOGLEVEL;
+
 extern long *log_event_mask;
 extern pthread_mutex_t *log_mutex;
 extern pthread_mutex_t *job_log_mutex;
@@ -179,11 +184,14 @@ extern char log_buffer[LOG_BUF_SIZE];
 /* extern int  chk_file_sec (char *, int, int, int, int, char *); */
 /* extern int  setup_env (char *); */
 
+extern int LOGLEVEL;
+
+extern int LOGLEVEL;
 
 /* Event types */
 
 #define PBSEVENT_ERROR  0x0001  /* internal errors       */
-#define PBSEVENT_SYSTEM  0x0002  /* system (server) events     */
+#define PBSEVENT_SYSTEM  0x0002  /* system (server) & (trqauthd) events     */
 #define PBSEVENT_ADMIN  0x0004  /* admin events        */
 #define PBSEVENT_JOB  0x0008  /* job related events       */
 #define PBSEVENT_JOB_USAGE 0x0010  /* End of Job accounting      */
@@ -191,6 +199,7 @@ extern char log_buffer[LOG_BUF_SIZE];
 #define PBSEVENT_SCHED  0x0040  /* scheduler events       */
 #define PBSEVENT_DEBUG  0x0080  /* common debug messages      */
 #define PBSEVENT_DEBUG2  0x0100  /* less needed debug messages */
+#define PBSEVENT_CLIENTAUTH 0X0200 /* TRQAUTHD login events */
 #define PBSEVENT_FORCE  0x8000  /* set to force a messag      */
 
 /* Event Object Classes, see array class_names[] in ../lib/Liblog/pbs_log.c   */
@@ -202,6 +211,7 @@ extern char log_buffer[LOG_BUF_SIZE];
 #define PBS_EVENTCLASS_FILE 5 /* A Job related File */
 #define PBS_EVENTCLASS_ACCT 6 /* Accounting info */
 #define PBS_EVENTCLASS_NODE 7 /* Nodes           */
+#define PBS_EVENTCLASS_TRQAUTHD 8 /* trqauthd */
 
 /* Logging Masks */
 

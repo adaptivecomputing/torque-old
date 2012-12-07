@@ -88,7 +88,7 @@ job *find_array_template(char *arrayid)
   exit(1);
   }
 
-int lock_node(struct pbsnode *the_node, char *id, char *msg, int logging)
+int lock_node(struct pbsnode *the_node, const char *id, char *msg, int logging)
   {
   fprintf(stderr, "The call to lock_node to be mocked!!\n");
   exit(1);
@@ -106,7 +106,7 @@ struct work_task *set_task(enum work_type type, long event_id, void (*func)(), v
   exit(1);
   }
 
-int unlock_node(struct pbsnode *the_node, char *id, char *msg, int logging)
+int unlock_node(struct pbsnode *the_node, const char *id, char *msg, int logging)
   {
   fprintf(stderr, "The call to unlock_node to be mocked!!\n");
   exit(1);
@@ -208,7 +208,7 @@ void release_req(struct work_task *pwt)
   exit(1);
   }
 
-void append_link(tlist_head *head, list_link *new, void *pobj)
+void append_link(tlist_head *head, list_link *new_link, void *pobj)
   {
   fprintf(stderr, "The call to append_link to be mocked!!\n");
   exit(1);
@@ -313,6 +313,11 @@ int lock_sv_qs_mutex(pthread_mutex_t *sv_qs_mutex, const char *msg_string)
 
 
 int unlock_ji_mutex(job *pjob, const char *id, char *msg, int logging)
+  {
+  return(0);
+  }
+
+int unlock_ai_mutex(job_array *pa, const char *id, char *msg, int logging)
   {
   return(0);
   }

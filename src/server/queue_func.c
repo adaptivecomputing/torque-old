@@ -127,7 +127,6 @@ extern char     *msg_err_unlink;
 extern char *path_queues;
 
 extern struct    server server;
-extern all_queues svr_queues;
 extern queue_recycler q_recycler;
 
 int lock_queue(
@@ -248,9 +247,9 @@ pbs_queue *que_alloc(
   initialize_all_jobs_array(pq->qu_jobs);
   initialize_all_jobs_array(pq->qu_jobs_array_sum);
   pthread_mutex_init(pq->qu_mutex,NULL);
-  lock_queue(pq, "que_alloc", NULL, LOGLEVEL);
+  lock_queue(pq, __func__, NULL, LOGLEVEL);
 
-  strncpy(pq->qu_qs.qu_name, name, PBS_MAXQUEUENAME);
+  snprintf(pq->qu_qs.qu_name, sizeof(pq->qu_qs.qu_name), "%s", name);
 
   insert_queue(&svr_queues,pq);
  
@@ -259,6 +258,10 @@ pbs_queue *que_alloc(
   server.sv_qs.sv_numque++;
   if (sv_qs_mutex_held == FALSE)
     unlock_sv_qs_mutex(server.sv_qs_mutex, __func__);
+
+  /* set up the user info struct */
+  pq->qu_uih = calloc(1, sizeof(user_info_holder));
+  initialize_user_info_holder(pq->qu_uih);
 
   /* set the working attributes to "unspecified" */
 
@@ -311,6 +314,8 @@ void que_free(
   server.sv_qs.sv_numque--;
   if (sv_qs_mutex_held == FALSE)
     unlock_sv_qs_mutex(server.sv_qs_mutex, __func__);
+
+  free_user_info_holder(pq->qu_uih);
 
   remove_queue(&svr_queues, pq);
   pq->q_being_recycled = TRUE;
@@ -580,12 +585,31 @@ int get_parent_dest_queues(
   pbs_queue *pque_parent;
   pbs_queue *pque_dest;
   char       jobid[PBS_MAXSVRJOBID + 1];
+  char       log_buf[LOCAL_LOG_BUF_SIZE + 1];
   job       *pjob = *pjob_ptr;
   int        index_parent;
   int        index_dest;
   int        rc = PBSE_NONE;
 
   strcpy(jobid, pjob->ji_qs.ji_jobid);
+
+  if ((queue_parent_name != NULL) && (queue_dest_name != NULL))
+    {
+    if (!strcmp(queue_parent_name, queue_dest_name))
+      {
+      /* parent and destination are the same. 
+         Job is already in destnation queue. return */
+      snprintf(log_buf, sizeof(log_buf), "parent and destination queues are the same: parent %s - dest %s. jobid: %s",
+          queue_parent_name,
+          queue_dest_name,
+          jobid);
+      log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, __func__, log_buf);
+      return(-1); 
+      }
+    }
+  else
+    return(-1);
+
   unlock_ji_mutex(pjob, __func__, "1", LOGLEVEL);
 
   unlock_queue(*parent, __func__, NULL, 0);
@@ -644,7 +668,7 @@ pbs_queue *lock_queue_with_job_held(
   job       **pjob_ptr)
 
   {
-  char       jobid[PBS_MAXSVRJOBID];
+  char       jobid[PBS_MAXSVRJOBID + 1];
   job       *pjob = *pjob_ptr;
 
   if (pque != NULL)
@@ -666,7 +690,7 @@ pbs_queue *lock_queue_with_job_held(
     }
 
   return(pque);
-  } /* END get_jobs_queue() */
+  } /* END lock_queue_with_job_held() */
 
 
 

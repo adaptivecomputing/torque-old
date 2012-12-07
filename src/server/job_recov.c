@@ -120,6 +120,7 @@
 #else
 #include "../resmom/mom_job_func.h" /* mom_job_free */
 #endif
+#include "array.h"
 #include "ji_mutex.h"
 
 #ifndef TRUE
@@ -145,7 +146,6 @@ extern int LOGLEVEL;
 
 /* data global only to this file */
 
-static const unsigned int quicksize = sizeof(struct jobfix);
 #ifndef PBS_MOM
 int add_to_ms_list(char *node_name, job *pjob);
 #endif
@@ -251,7 +251,7 @@ int job_save(
 
     /* just write the "critical" base structure to the file */
 
-    while ((i = write(fds, (char *) & pjob->ji_qs, quicksize)) != (ssize_t)quicksize)
+    while ((i = write(fds, (char *)&pjob->ji_qs, sizeof(pjob->ji_qs))) != sizeof(pjob->ji_qs))
       {
       if ((i < 0) && (errno == EINTR))
         {
@@ -319,7 +319,7 @@ int job_save(
       lock_ss();
 #endif
 
-      if (save_struct((char *)&pjob->ji_qs, quicksize, fds, save_buf, &buf_remaining, sizeof(save_buf)) != PBSE_NONE)
+      if (save_struct((char *)&pjob->ji_qs, sizeof(pjob->ji_qs), fds, save_buf, &buf_remaining, sizeof(save_buf)) != PBSE_NONE)
         {
         redo++;
         }
@@ -463,7 +463,7 @@ job *job_recov(
 
   /* read in job quick save sub-structure */
 
-  if (read(fds, (char *)&pj->ji_qs, quicksize) != (ssize_t)quicksize &&
+  if (read(fds, (char *)&pj->ji_qs, sizeof(pj->ji_qs)) != sizeof(pj->ji_qs) &&
       pj->ji_qs.qs_version == PBS_QS_VERSION)
     {
     snprintf(log_buf, LOCAL_LOG_BUF_SIZE, "Unable to read %s", namebuf);
@@ -569,10 +569,11 @@ job *job_recov(
     }
 
 #ifndef PBS_MOM
+  /* Comment out the mother superior tracking. Will be debugged later 
   if (pj->ji_wattr[JOB_ATR_exec_host].at_val.at_str != NULL)
-    {
+    {*/
     /* add job to the mother superior list for it's node */
-    char *ms = strdup(pj->ji_wattr[JOB_ATR_exec_host].at_val.at_str);
+/*    char *ms = strdup(pj->ji_wattr[JOB_ATR_exec_host].at_val.at_str);
     char *end = strchr(ms, '/');
 
     if (end != NULL)
@@ -584,7 +585,7 @@ job *job_recov(
     add_to_ms_list(ms, pj);
 
     free(ms);
-    }
+    }*/
 #endif
 
 #ifdef PBS_MOM
@@ -599,9 +600,9 @@ job *job_recov(
     log_err(-1, __func__, log_buf);
     }
 
-#else /* PBS_MOM */
+#else /* not PBS_MOM */
 
-  if (pj->ji_wattr[JOB_ATR_job_array_request].at_flags & ATR_VFLAG_SET)
+  if (strchr(pj->ji_qs.ji_jobid, '[') != NULL)
     {
     /* job is part of an array.  We need to put a link back to the server
     job array struct for this array. We also have to link this job into
@@ -616,15 +617,15 @@ job *job_recov(
       return NULL;
       }
 
+    strcpy(pj->ji_arraystructid, parent_id);
+
     if (strcmp(parent_id, pj->ji_qs.ji_jobid) == 0)
       {
       pj->ji_is_array_template = TRUE;
-      pj->ji_arraystruct = pa;
       }
     else
       {
       pa->job_ids[(int)pj->ji_wattr[JOB_ATR_job_array_id].at_val.at_long] = strdup(pj->ji_qs.ji_jobid);
-      pj->ji_arraystruct = pa; 
       pa->jobs_recovered++;
 
       /* This is a bit of a kluge, but for some reason if an array job was 
@@ -632,7 +633,8 @@ job *job_recov(
          value is 0 on recovery even though pj->ji_qs.ji_state is JOB_STATE_HELD and
          the substate is JOB_SUBSTATE_HELD
       */
-      if ((pj->ji_qs.ji_state == JOB_STATE_HELD) && (pj->ji_qs.ji_substate == JOB_SUBSTATE_HELD))
+      if ((pj->ji_qs.ji_state == JOB_STATE_HELD) &&
+          (pj->ji_qs.ji_substate == JOB_SUBSTATE_HELD))
         {
         pj->ji_wattr[JOB_ATR_hold].at_val.at_long = HOLD_l;
         pj->ji_wattr[JOB_ATR_hold].at_flags = ATR_VFLAG_SET;
@@ -641,12 +643,7 @@ job *job_recov(
 
     if (pa != NULL)
       {
-      pthread_mutex_unlock(pa->ai_mutex);
-      if(LOGLEVEL >=7)
-        {
-        sprintf(log_buf, "unlocked ai_mutex: %s", __func__);
-        log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, pj->ji_qs.ji_jobid, log_buf);
-        }
+      unlock_ai_mutex(pa, __func__, "1", LOGLEVEL);
       }
     }
 

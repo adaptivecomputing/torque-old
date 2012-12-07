@@ -11,9 +11,11 @@
 #include "../Libifl/lib_ifl.h" /* process_svr_conn */
 #include "../Libnet/lib_net.h"
 #include "threadpool.h"
+#include "../Liblog/pbs_log.h"
 
 extern int debug_mode;
 extern void *(*read_func[])(void *);
+extern char *msg_daemonname;
 
 /* Note, in extremely high load cases, the alloc value in /proc/net/sockstat can exceed the max value. This will substantially slow down throughput and generate connection failures (accept gets a EMFILE error). As the client is designed to run on each submit host, that issue shouldn't occur. The client must be restarted to clear out this issue. */
 int start_listener(
@@ -23,15 +25,20 @@ int start_listener(
   void *(*process_meth)(void *))
 
   {
-  struct sockaddr_in adr_svr, adr_client;
-  int rc = PBSE_NONE;
-  int sockoptval = 1;
-  int len_inet = sizeof(struct sockaddr_in);
-  int *new_conn_port = NULL;
-  int listen_socket = 0;
-  int total_cntr = 0;
-  pthread_t tid;
-  pthread_attr_t t_attr;
+  struct sockaddr_in  adr_svr;
+  struct sockaddr_in  adr_client;
+  int                 rc = PBSE_NONE;
+  int                 sockoptval = 1;
+  int                 len_inet = sizeof(struct sockaddr_in);
+  int                *new_conn_port = NULL;
+  int                 listen_socket = 0;
+  int                 total_cntr = 0;
+  pthread_t           tid;
+  pthread_attr_t      t_attr;
+  int objclass = 0;
+  char msg_started[1024];
+
+  memset(&adr_svr, 0, sizeof(adr_svr));
   adr_svr.sin_family = AF_INET;
 
   if (!(adr_svr.sin_port = htons(server_port)))
@@ -72,9 +79,21 @@ int start_listener(
     }
   else
     {
+    log_get_set_eventclass(&objclass, GETV);
+    if (objclass == PBS_EVENTCLASS_TRQAUTHD)
+      {
+      snprintf(msg_started, sizeof(msg_started),
+        "TORQUE authd daemon started and listening on IP:port %s:%d", server_ip, server_port);
+      log_event(PBSEVENT_SYSTEM | PBSEVENT_FORCE, PBS_EVENTCLASS_TRQAUTHD,
+        msg_daemonname, msg_started);
+      }
     while (1)
       {
-      new_conn_port = (int *)calloc(1, sizeof(int));
+      if((new_conn_port = (int *)calloc(1, sizeof(int))) == NULL)
+        {
+        printf("Error allocating new connection handle on accept.\n");
+        break;
+        }
       if ((*new_conn_port = accept(listen_socket, (struct sockaddr *)&adr_client, (socklen_t *)&len_inet)) == -1)
         {
         if (errno == EMFILE)
@@ -155,6 +174,7 @@ int start_listener_addrinfo(
   port_net_byte_order = htons(server_port);
   memcpy(&adr_svr->ai_addr->sa_data, &port_net_byte_order, sizeof(unsigned short));
 
+  memset(&svr_address, 0, sizeof(svr_address));
   svr_address.sin_family      = adr_svr->ai_family;
   svr_address.sin_port        = htons(server_port);
   svr_address.sin_addr.s_addr = htonl(INADDR_ANY);
@@ -190,7 +210,11 @@ int start_listener_addrinfo(
     while (1)
       {
       len_inet = sizeof(struct sockaddr);
-      new_conn_port = (int *)calloc(1, sizeof(int));
+      if((new_conn_port = (int *)calloc(1, sizeof(int))) == NULL)
+        {
+        printf("Error allocating new connection handle.\n");
+        break;
+        }
       if ((*new_conn_port = accept(listen_socket, (struct sockaddr *)&adr_client, (socklen_t *)&len_inet)) == -1)
         {
         if (errno == EMFILE)

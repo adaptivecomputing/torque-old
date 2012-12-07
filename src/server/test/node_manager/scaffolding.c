@@ -33,7 +33,8 @@ int LOGLEVEL = 0;
 hello_container hellos;
 struct pbsnode reporter;
 struct pbsnode *alps_reporter = &reporter;
-
+const char *alps_reporter_feature  = "alps_reporter";
+const char *alps_starter_feature   = "alps_login";
 
 
 
@@ -164,7 +165,7 @@ struct prop *init_prop(char *pname)
   exit(1);
   }
 
-int node_status_list(pbs_attribute *new, void *pnode, int actmode)
+int node_status_list(pbs_attribute *new_attr, void *pnode, int actmode)
   {
   fprintf(stderr, "The call to node_status_list needs to be mocked!!\n");
   exit(1);
@@ -218,7 +219,7 @@ void release_req(struct work_task *pwt)
   exit(1);
   }
 
-void append_link(tlist_head *head, list_link *new, void *pobj)
+void append_link(tlist_head *head, list_link *new_link, void *pobj)
   {
   fprintf(stderr, "The call to append_link needs to be mocked!!\n");
   exit(1);
@@ -305,12 +306,12 @@ void reinitialize_node_iterator(node_iterator *iter)
   exit(1);
   }
 
-int unlock_node(struct pbsnode *the_node, char *id, char *msg, int logging)
+int unlock_node(struct pbsnode *the_node, const char *id, char *msg, int logging)
   {
   return(0);
   }        
 
-int lock_node(struct pbsnode *the_node, char *id, char *msg, int logging)
+int lock_node(struct pbsnode *the_node, const char *id, char *msg, int logging)
   {
   return(0);
   }        
@@ -434,6 +435,31 @@ void *pop_thing(resizable_array *ra)
   }
 
 int unlock_ji_mutex(job *pjob, const char *id, char *msg, int logging)
+  {
+  return(0);
+  }
+
+struct pbssubn *create_subnode(struct pbsnode *pnode)
+
+  {
+  return(NULL);
+  }
+
+struct pbsnode *create_alps_subnode(
+
+  struct pbsnode *parent,
+  char           *node_id)
+
+  {
+  return(NULL);
+  }
+
+int append_dynamic_string(dynamic_string *ds, const char *str)
+  {
+  return(0);
+  }
+
+int append_char_to_dynamic_string(dynamic_string *ds, char c)
   {
   return(0);
   }

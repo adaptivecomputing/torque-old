@@ -164,7 +164,7 @@ void req_reject(int code, int aux, struct batch_request *preq, char *HostName, c
   exit(1);
   }
 
-int depend_on_term(job *pjob)
+int depend_on_term(char *job_id)
   {
   fprintf(stderr, "The call to depend_on_term to be mocked!!\n");
   exit(1);
@@ -194,7 +194,7 @@ void update_array_values(job_array *pa, int old_state, enum ArrayEventsEnum even
   exit(1);
   }
 
-void append_link(tlist_head *head, list_link *new, void *pobj)
+void append_link(tlist_head *head, list_link *new_link, void *pobj)
   {
   fprintf(stderr, "The call to append_link to be mocked!!\n");
   exit(1);
@@ -327,6 +327,21 @@ int unlock_node(
   char           *msg,
   int             logging)
 
+  {
+  return(0);
+  }
+
+int unlock_ai_mutex(job_array *pa, const char *id, char *msg, int logging)
+  {
+  return(0);
+  }
+
+int record_job_as_exiting(job *pjob)
+  {
+  return(0);
+  }
+
+int remove_job_from_exiting_list(job *pjob)
   {
   return(0);
   }

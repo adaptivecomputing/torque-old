@@ -106,7 +106,7 @@
 #endif
 
 #define MAX_SOCKETS 65536
-time_t pbs_tcp_timeout = 600;  /* reduced from 60 to 20 (CRI - Nov/03/2004) */
+time_t pbs_tcp_timeout = 300;  
 
 
 
@@ -214,18 +214,23 @@ int tcp_read(
     switch (rc)
       {
       case PBSE_TIMEOUT:
+
         chan->IsTimeout = 1;
-        /* This return 0. This isn't accurate on a timeout */
-/*        rc = 0; */
+
         break;
+
       default:
+
         chan->SelectErrno = rc;
         chan->ReadErrno = rc;
+
         break;
       }
+
     if (new_data != NULL)
       free(new_data);
-    return rc;
+
+    return(rc);
     }
   /* data read is less than buffer size */
   else if (max_read_len > *read_len)
@@ -246,7 +251,7 @@ int tcp_read(
     free(new_data);
     }
   /* data read is greater than buffer size */
-  else if (max_read_len < *read_len)
+  else if (max_read_len <= *read_len)
     {
     newsize = (tdis_buf_len + *read_len) * 2;
     if ((ptr = (char *)calloc(1, newsize+1)) == NULL)
@@ -278,9 +283,11 @@ int tcp_read(
       snprintf(err_msg, sizeof(err_msg), "eod ptr BEYOND end of buffer!!(expand) Remaining buffer = %d, read_len = %lld", max_read_len, *read_len);
       log_err(PBSE_INTERNAL,__func__,err_msg);
       }
+
     free(new_data);
     }
-  return rc;
+
+  return(rc);
   }  /* END tcp_read() */
 
 
@@ -432,14 +439,14 @@ int tcp_rskip(
 int tcp_gets(
 
   struct tcp_chan *chan,
-  char   *str,
-  size_t  ct)
+  char            *str,
+  size_t           ct)
 
   {
-  int rc = 0;
+  int               rc = 0;
   struct tcpdisbuf *tp;
-  long long data_read = 0;
-  long long data_avail = 0;
+  long long         data_read = 0;
+  long long         data_avail = 0;
 
   tp = &chan->readbuf;
   /* length of usable data in current buffer */
@@ -496,10 +503,6 @@ int tcp_puts(
   size_t      ct)  /* I */
 
   {
-#ifndef NDEBUG
-  char *id = "tcp_puts";
-#endif
-
   struct tcpdisbuf *tp = NULL;
   char             *temp = NULL;
   int               leadpct;
@@ -527,7 +530,7 @@ int tcp_puts(
         tp->tdis_bufsize,
         (int)(tp->tdis_leadp - tp->tdis_thebuf),
         (int)ct);
-      log_err(ENOMEM,id,log_buf);
+      log_err(ENOMEM, __func__, log_buf);
       return(-1);
       }
 
@@ -658,17 +661,17 @@ struct tcp_chan * DIS_tcp_setup(
   struct tcpdisbuf *tp = NULL;
 
   /* check for bad file descriptor */
-
   if (fd < 0)
     {
-    return NULL;
+    return(NULL);
     }
 
   if ((chan = (struct tcp_chan *)calloc(1, sizeof(struct tcp_chan))) == NULL)
     {
     log_err(ENOMEM, "DIS_tcp_setup", "calloc failure");
-    return NULL;
+    return(NULL);
     }
+
   /* Assign socket to struct */
   chan->sock = fd;
 
@@ -678,8 +681,9 @@ struct tcp_chan * DIS_tcp_setup(
     {
     free(chan);
     log_err(errno,"DIS_tcp_setup","calloc failure");
-    return NULL;
+    return(NULL);
     }
+
   tp->tdis_bufsize = THE_BUF_SIZE;
   DIS_tcp_clear(tp);
 
@@ -690,18 +694,26 @@ struct tcp_chan * DIS_tcp_setup(
     free(chan->readbuf.tdis_thebuf);
     free(chan);
     log_err(errno,"DIS_tcp_setup","calloc failure");
-    return NULL;
+    return(NULL);
     }
+
   tp->tdis_bufsize = THE_BUF_SIZE;
   DIS_tcp_clear(tp);
-  return chan;
+
+  return(chan);
   }  /* END DIS_tcp_setup() */
 
 
 
-void DIS_tcp_cleanup(struct tcp_chan *chan)
+void DIS_tcp_cleanup(
+    
+  struct tcp_chan *chan)
+
   {
   struct tcpdisbuf *tp = NULL;
+
+  if (chan == NULL)
+    return;
   tp = &chan->readbuf;
   free(tp->tdis_thebuf);
 
@@ -711,7 +723,10 @@ void DIS_tcp_cleanup(struct tcp_chan *chan)
   free(chan);
   }
 
-void DIS_tcp_close(struct tcp_chan *chan)
+void DIS_tcp_close(
+    
+  struct tcp_chan *chan)
+
   {
   int sock = chan->sock;
   DIS_tcp_cleanup(chan);

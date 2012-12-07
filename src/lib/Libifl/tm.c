@@ -114,16 +114,14 @@
 ** Set up a debug print macro.
 */
 #ifdef  DEBUG
-#define DBPRT(x) \
-    { \
-    int err = errno; \
-    printf x; \
-    errno = err; \
-    }
-#define DOID(x)  static char id[] = x;
+  #define TM_DBPRT(x) \
+      { \
+      int err = errno; \
+      printf x; \
+      errno = err; \
+      }
 #else
-#define DBPRT(x)
-#define DOID(x)
+  #define TM_DBPRT(x)
 #endif
 
 #ifndef MIN
@@ -229,7 +227,7 @@ del_event(event_info *ep)
       break;
 
     default:
-      DBPRT(("del_event: unknown event command %d\n", ep->e_mtype))
+      TM_DBPRT(("del_event: unknown event command %d\n", ep->e_mtype))
       break;
     }
 
@@ -345,29 +343,28 @@ find_task(tm_task_id x)
 static tm_task_id
 new_task(char *jobid, tm_node_id node, tm_task_id task)
   {
-  DOID("new_task")
   task_info  *tp, **head;
 
-  DBPRT(("%s: jobid=%s node=%d task=%lu\n",
-         id, jobid, node, (unsigned long)task))
+  TM_DBPRT(("%s: jobid=%s node=%d task=%lu\n",
+         __func__, jobid, node, (unsigned long)task))
 
   if (jobid != tm_jobid && strcmp(jobid, tm_jobid) != 0)
     {
-    DBPRT(("%s: task job %s not my job %s\n",
-           id, jobid, tm_jobid))
+    TM_DBPRT(("%s: task job %s not my job %s\n",
+           __func__, jobid, tm_jobid))
     return TM_NULL_TASK;
     }
 
   if (node == TM_ERROR_NODE)
     {
-    DBPRT(("%s: called with TM_ERROR_NODE\n", id))
+    TM_DBPRT(("%s: called with TM_ERROR_NODE\n", __func__))
     return TM_NULL_TASK;
     }
 
   if ((tp = find_task(task)) != NULL)
     {
-    DBPRT(("%s: task %lu found with node %d should be %d\n",
-           id, (unsigned long)task, tp->t_node, node))
+    TM_DBPRT(("%s: task %lu found with node %d should be %d\n",
+           __func__, (unsigned long)task, tp->t_node, node))
     return task;
     }
 
@@ -458,7 +455,7 @@ static int localmom(void)
 
     if (getaddrinfo("localhost", NULL, NULL, &addr_info) != 0)
       {
-      DBPRT(("tm_init: localhost not found\n"))
+      TM_DBPRT(("tm_init: localhost not found\n"))
 
       return(-1);
       }
@@ -618,7 +615,7 @@ static int startcom(
 
 done:
 
-  DBPRT(("startcom: send error %s\n",
+  TM_DBPRT(("startcom: send error %s\n",
          dis_emsg[ret]))
   if (chan != NULL)
     DIS_tcp_close(chan);
@@ -1385,14 +1382,13 @@ tm_register(tm_whattodo_t *what, tm_event_t *event)
 */
 
 int tm_poll(
-    tm_event_t poll_event,
-    tm_event_t *result_event,
-    int  wait,
-    int  *tm_errno)
+
+  tm_event_t  poll_event,
+  tm_event_t *result_event,
+  int         wait,
+  int        *tm_errno)
 
   {
-  DOID("tm_poll")
-
   int  num, i;
   int  ret, mtype, nnodes;
   int  prot, protver;
@@ -1401,8 +1397,8 @@ int tm_poll(
   tm_task_id tid, *tidp;
   tm_event_t nevent;
   tm_node_id node;
-  char  *jobid;
-  char  *info;
+  char  *jobid = NULL;
+  char  *info = NULL;
 
   struct tm_roots *roots;
 
@@ -1431,16 +1427,16 @@ int tm_poll(
 
   if (event_count == 0)
     {
-    DBPRT(("%s: no events waiting\n",
-           id))
+    TM_DBPRT(("%s: no events waiting\n",
+           __func__))
 
     return(TM_ENOTFOUND);
     }
 
   if (local_conn < 0)
     {
-    DBPRT(("%s: INTERNAL ERROR %d events but no connection (%d)\n",
-           id, event_count, local_conn))
+    TM_DBPRT(("%s: INTERNAL ERROR %d events but no connection (%d)\n",
+           __func__, event_count, local_conn))
 
     if (static_chan != NULL)
       {
@@ -1452,7 +1448,7 @@ int tm_poll(
 
   if ((static_chan == NULL) && ((static_chan = DIS_tcp_setup(local_conn)) == NULL))
     {
-    DBPRT(("%s: Error allocating memory for sock buffer %d", __func__, PBSE_MEM_MALLOC))
+    TM_DBPRT(("%s: Error allocating memory for sock buffer %d", __func__, PBSE_MEM_MALLOC))
       return TM_BADINIT;
     }
 
@@ -1473,13 +1469,13 @@ int tm_poll(
     }
   else if (ret != DIS_SUCCESS)
     {
-    DBPRT(("%s: protocol number dis error %d\n", id, ret))
+    TM_DBPRT(("%s: protocol number dis error %d\n", __func__, ret))
     goto tm_poll_error;
     }
 
   if (prot != TM_PROTOCOL)
     {
-    DBPRT(("%s: bad protocol number %d\n", id, prot))
+    TM_DBPRT(("%s: bad protocol number %d\n", __func__, prot))
     goto tm_poll_error;
     }
 
@@ -1493,13 +1489,13 @@ int tm_poll(
 
   if (ret != DIS_SUCCESS)
     {
-    DBPRT(("%s: protocol version dis error %d\n", id, ret))
+    TM_DBPRT(("%s: protocol version dis error %d\n", __func__, ret))
     goto tm_poll_error;
     }
 
   if (protver != TM_PROTOCOL_VER)
     {
-    DBPRT(("%s: bad protocol version %d\n", id, protver))
+    TM_DBPRT(("%s: bad protocol version %d\n", __func__, protver))
     goto tm_poll_error;
     }
 
@@ -1507,7 +1503,7 @@ int tm_poll(
 
   if (ret != DIS_SUCCESS)
     {
-    DBPRT(("%s: mtype dis error %d\n", id, ret))
+    TM_DBPRT(("%s: mtype dis error %d\n", __func__, ret))
     goto tm_poll_error;
     }
 
@@ -1515,17 +1511,17 @@ int tm_poll(
 
   if (ret != DIS_SUCCESS)
     {
-    DBPRT(("%s: event dis error %d\n", id, ret))
+    TM_DBPRT(("%s: event dis error %d\n", __func__, ret))
     goto tm_poll_error;
     }
 
   *result_event = nevent;
 
-  DBPRT(("%s: got event %d return %d\n", id, nevent, mtype))
+  TM_DBPRT(("%s: got event %d return %d\n", __func__, nevent, mtype))
 
   if ((ep = find_event(nevent)) == NULL)
     {
-    DBPRT(("%s: No event found for number %d\n", id, nevent));
+    TM_DBPRT(("%s: No event found for number %d\n", __func__, nevent));
     DIS_tcp_close(static_chan);
     static_chan = NULL;
     local_conn = -1;
@@ -1535,7 +1531,7 @@ int tm_poll(
   if (mtype == TM_ERROR)   /* problem, read error num */
     {
     *tm_errno = disrsi(static_chan, &ret);
-    DBPRT(("%s: event %d error %d\n", id, nevent, *tm_errno));
+    TM_DBPRT(("%s: event %d error %d\n", __func__, nevent, *tm_errno));
     goto tm_poll_done;
     }
 
@@ -1561,7 +1557,7 @@ int tm_poll(
 
       if (ret != DIS_SUCCESS)
         {
-        DBPRT(("%s: INIT failed nnodes\n", id))
+        TM_DBPRT(("%s: INIT failed nnodes\n", __func__))
         goto tm_poll_error;
         }
 
@@ -1575,7 +1571,7 @@ int tm_poll(
         goto tm_poll_error;
         }
 
-      DBPRT(("%s: INIT nodes %d\n", id, nnodes))
+      TM_DBPRT(("%s: INIT nodes %d\n", __func__, nnodes))
 
       for (i = 0; i < nnodes; i++)
         {
@@ -1583,7 +1579,7 @@ int tm_poll(
 
         if (ret != DIS_SUCCESS)
           {
-          DBPRT(("%s: INIT failed nodeid %d\n", id, i))
+          TM_DBPRT(("%s: INIT failed nodeid %d\n", __func__, i))
           goto tm_poll_error;
           }
         }
@@ -1594,31 +1590,31 @@ int tm_poll(
 
       if (ret != DIS_SUCCESS)
         {
-        DBPRT(("%s: INIT failed jobid\n", id))
+        TM_DBPRT(("%s: INIT failed jobid\n", __func__))
         goto tm_poll_error;
         }
 
-      DBPRT(("%s: INIT daddy jobid %s\n", id, jobid))
+      TM_DBPRT(("%s: INIT daddy jobid %s\n", __func__, jobid))
 
       node = disrsi(static_chan, &ret);
 
       if (ret != DIS_SUCCESS)
         {
-        DBPRT(("%s: INIT failed parent nodeid\n", id))
+        TM_DBPRT(("%s: INIT failed parent nodeid\n", __func__))
         goto tm_poll_error;
         }
 
-      DBPRT(("%s: INIT daddy node %d\n", id, node))
+      TM_DBPRT(("%s: INIT daddy node %d\n", __func__, node))
 
       tid = disrsi(static_chan, &ret);
 
       if (ret != DIS_SUCCESS)
         {
-        DBPRT(("%s: INIT failed parent taskid\n", id))
+        TM_DBPRT(("%s: INIT failed parent taskid\n", __func__))
         goto tm_poll_error;
         }
 
-      DBPRT(("%s: INIT daddy tid %lu\n", id, (unsigned long)tid))
+      TM_DBPRT(("%s: INIT daddy tid %lu\n", __func__, (unsigned long)tid))
 
       roots = (struct tm_roots *)ep->e_info;
       roots->tm_parent = new_task(jobid, node, tid);
@@ -1666,7 +1662,7 @@ int tm_poll(
 
       if (ret != DIS_SUCCESS)
         {
-        DBPRT(("%s: SPAWN failed tid\n", id))
+        TM_DBPRT(("%s: SPAWN failed tid\n", __func__))
         goto tm_poll_error;
         }
 
@@ -1684,7 +1680,7 @@ int tm_poll(
 
       if (ret != DIS_SUCCESS)
         {
-        DBPRT(("%s: OBIT failed obitval\n", id))
+        TM_DBPRT(("%s: OBIT failed obitval\n", __func__))
         goto tm_poll_error;
         }
 
@@ -1699,7 +1695,10 @@ int tm_poll(
 
       if (ret != DIS_SUCCESS)
         {
-        DBPRT(("%s: GETINFO failed info\n", id))
+        if (info != NULL)
+          free(info);
+
+        TM_DBPRT(("%s: GETINFO failed info\n", __func__))
         break;
         }
 
@@ -1713,7 +1712,12 @@ int tm_poll(
       info = disrst(static_chan, &ret);
 
       if (ret != DIS_SUCCESS)
+        {
+        if (info != NULL)
+          free(info);
+
         break;
+        }
 
       snprintf(rhold->resc, rhold->len, "%s", info);
 
@@ -1722,12 +1726,15 @@ int tm_poll(
       break;
 
     default:
-      DBPRT(("%s: unknown event command %d\n", id, ep->e_mtype))
+      TM_DBPRT(("%s: unknown event command %d\n", __func__, ep->e_mtype))
       goto tm_poll_error;
     }
 
   DIS_tcp_wflush(static_chan);
 tm_poll_done:
+
+  if (jobid != NULL)
+    free(jobid);
 
   del_event(ep);
   if (tcp_chan_has_data(static_chan) == FALSE)
@@ -1739,6 +1746,9 @@ tm_poll_done:
   return TM_SUCCESS;
 
 tm_poll_error:
+
+  if (jobid != NULL)
+    free(jobid);
 
   if (ep)
     del_event(ep);

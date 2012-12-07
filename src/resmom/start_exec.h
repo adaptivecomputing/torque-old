@@ -34,8 +34,6 @@ int is_joined(job *pjob);
 
 int mkdirtree(char *dirpath, mode_t mode);
 
-int TTmpDirName(job *pjob, char *tmpdir);
-
 int TMakeTmpDir(job *pjob, char *tmpdir);
 
 int InitUserEnv(job *pjob, task *ptask, char **envp, struct passwd *pwdp, char *shell);
@@ -57,7 +55,6 @@ int determine_umask(int uid);
 #ifdef PENABLE_LINUX26_CPUSETS
 int use_cpusets(job *pjob);
 #endif /* PENABLE_LINUX26_CPUSETS */
-int write_gpus_to_file(job *pjob);
 
 int write_nodes_to_file(job *pjob);
 
